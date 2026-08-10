@@ -1,0 +1,7 @@
+.env
+node_modules/
+cache/
+exports/
+.gstack/
+src-tauri/target/
+src-tauri/gen/
