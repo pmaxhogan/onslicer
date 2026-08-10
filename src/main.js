@@ -3,6 +3,8 @@ import * as api from './api.js';
 const $ = s => document.querySelector(s);
 let docs = [];
 let currentDoc = null;
+let appVersion = '';
+window.__TAURI__.app.getVersion().then(v => appVersion = v).catch(() => {});
 
 function toast(msg, isErr = false, ms = 3500) {
   const t = $('#toast');
@@ -46,7 +48,8 @@ async function loadDocs(refresh = false) {
     if (refresh) api.clearThumbUrls();
     const data = await api.getDocs(refresh);
     docs = data.items;
-    $('#meta').textContent = `${docs.length} docs · ${data.fromCache ? 'cached' : 'fresh'} ${fmtDate(data.fetchedAt)}`;
+    const v = appVersion ? `v${appVersion} · ` : '';
+    $('#meta').textContent = `${v}${docs.length} docs · ${data.fromCache ? 'cached' : 'fresh'} ${fmtDate(data.fetchedAt)}`;
     render();
   } catch (e) {
     toast('Failed to load documents: ' + e.message, true, 6000);
