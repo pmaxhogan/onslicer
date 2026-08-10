@@ -7,6 +7,9 @@ on:
 
 jobs:
   build:
+    # Dependabot-actored pushes get a read-only GITHUB_TOKEN and can't create
+    # releases; their dependency bumps ship with the next regular push instead.
+    if: github.actor != 'dependabot[bot]'
     runs-on: windows-latest
     permissions:
       contents: write
