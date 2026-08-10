@@ -244,7 +244,8 @@ export async function print({ doc, el, part = null }) {
     const res = await onshape(`/api/v6/blobelements/d/${doc.id}/w/${doc.workspaceId}/e/${el.id}`, '*/*');
     if (!res.ok) throw new Error(`blob download failed (${res.status})`);
     bytes = new Uint8Array(await res.arrayBuffer());
-    ext = PRINTABLE_BLOBS[el.dataType] ?? '.stl';
+    ext = PRINTABLE_BLOBS[el.dataType]
+      ?? (/\.(stl|3mf)$/i.exec(el.name || '')?.[0].toLowerCase() || '.stl');
   } else {
     throw new Error(`unsupported element type ${el.elementType}`);
   }
@@ -279,6 +280,26 @@ export async function runSelfTest() {
     const solid = parts.items.find(p => p.bodyType === 'solid') ?? parts.items[0];
     const res = await print({ doc, el: ps, part: solid });
     step('print', res.bytes > 100, `${res.bytes} bytes → ${res.file}`);
+
+    // Cache invalidation: an elements refresh must delete this doc's parts caches.
+    const partsCache = `cache/parts/${doc.id}-${ps.id}.json`;
+    const existedBefore = await fs.exists(partsCache, AppData);
+    await getElements(doc, true);
+    const existsAfter = await fs.exists(partsCache, AppData);
+    step('cache-invalidation', existedBefore && !existsAfter,
+      `parts cache before=${existedBefore} after-refresh=${existsAfter}`);
+
+    // Blob print path (different endpoint + ext inference). 3MF blobs are
+    // hidden from the UI, so reach one via the unfiltered raw element list.
+    const rawEls = JSON.parse(await fs.readTextFile(`cache/elements/${doc.id}.json`, AppData)).items;
+    const blob = rawEls.find(e => e.elementType === 'BLOB' && /\.(stl|3mf)$/i.test(e.name || ''));
+    if (blob) {
+      const bres = await print({ doc, el: blob });
+      step('blob-print', bres.bytes > 100 && /\.(stl|3mf)$/.test(bres.file),
+        `${bres.bytes} bytes → ${bres.file}`);
+    } else {
+      step('blob-print', true, 'no blob element available to test (skipped)');
+    }
     out.ok = out.steps.every(s => s.ok);
   } catch (err) {
     out.ok = false;
