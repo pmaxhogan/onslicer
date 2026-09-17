@@ -180,10 +180,17 @@ export async function getElements(doc, refresh = false) {
 
 // ---------- parts ----------
 
+// Disk-cached part list or null. Never hits the API — the dialog filter uses
+// this so typing can match part names without spending any of the call budget.
+export async function peekParts(doc, eid) {
+  await ready;
+  return readJsonCache(`cache/parts/${doc.id}-${eid}.json`);
+}
+
 export async function getParts(doc, eid, refresh = false) {
   await ready;
   const rel = `cache/parts/${doc.id}-${eid}.json`;
-  let data = refresh ? null : await readJsonCache(rel);
+  let data = refresh ? null : await peekParts(doc, eid);
   const fromCache = !!data;
   if (!data) {
     const res = await onshape(`/api/v6/parts/d/${doc.id}/w/${doc.workspaceId}/e/${eid}`);

@@ -10,6 +10,7 @@
     --text: #e8eaf0; --muted: #9aa1b0; --accent: #00ae42; --accent-2: #00c94d;
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body { margin: 0; background: var(--bg); color: var(--text);
     font: 15px/1.5 "Segoe UI", system-ui, sans-serif; }
   header { display: flex; align-items: center; gap: 12px; padding: 14px 22px;
@@ -23,8 +24,9 @@
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
   button.primary:hover { background: var(--accent-2); }
   button:disabled { opacity: .5; cursor: default; }
-  #search { background: var(--panel); border: 1px solid var(--border); color: var(--text);
+  #search, #dlg-filter { background: var(--panel); border: 1px solid var(--border); color: var(--text);
     border-radius: 7px; padding: 6px 12px; font: inherit; font-size: 13.5px; width: 220px; }
+  #dlg-filter { width: 180px; background: var(--panel-2); padding: 5px 10px; font-size: 13px; }
   #note { max-width: 1400px; margin: 14px auto 0; padding: 10px 22px; }
   #note .inner { background: var(--panel); border: 1px solid var(--border); border-radius: 9px;
     padding: 10px 14px; color: var(--muted); font-size: 12.5px; line-height: 1.65; }
@@ -61,6 +63,9 @@
   .parts { margin-left: 18px; border-left: 2px solid var(--border); }
   .parts .el { border-bottom: none; padding: 5px 4px 5px 12px; }
   .parts .type { background: transparent; border: 1px solid var(--border); }
+  .dlg-note { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px 4px 2px;
+    color: var(--muted); font-size: 12.5px; }
+  .dlg-note button { font-size: 12px; padding: 4px 9px; }
   #settings .dlg-body { display: flex; flex-direction: column; gap: 12px; }
   #settings label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
   #settings input { background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
@@ -105,6 +110,8 @@
 <dialog id="dlg">
   <div class="dlg-head">
     <h2 id="dlg-title"></h2>
+    <input id="dlg-filter" type="text" placeholder="Filter tabs & parts…" autocomplete="off" spellcheck="false"
+      title="Matches tab names, and part names in part studios whose parts have been listed (▸ parts)">
     <button id="dlg-refresh" title="Re-fetch element list (uses 1 API call)">⟳</button>
     <button id="dlg-close">✕</button>
   </div>
