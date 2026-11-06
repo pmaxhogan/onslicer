@@ -106,7 +106,9 @@ async function removeMatching(dir, predicate) {
 }
 
 function sanitize(name) {
-  return (name || 'model').replace(/[^\w.\- ]+/g, '_').replace(/\s+/g, ' ').trim().slice(0, 80);
+  // Windows rejects path segments ending in '.' or ' ', so trim those too.
+  return (name || 'model').replace(/[^\w.\- ]+/g, '_').replace(/\s+/g, ' ').trim().slice(0, 80)
+    .replace(/[. ]+$/, '') || 'model';
 }
 
 // ---------- documents ----------
@@ -235,9 +237,20 @@ export function clearThumbUrls() {
 
 // ---------- print ----------
 
-export async function print({ doc, el, part = null }) {
+// Stable export path per (doc, element, part), named after the thing itself so
+// Bambu Studio shows a meaningful object name. Because the path never changes,
+// save() can overwrite it and Bambu's "Reload from disk" picks up new geometry:
+//   exports/<doc>/<tab>.stl            whole part studio or blob
+//   exports/<doc>/<tab>/<part>.stl     single part
+function exportRel(doc, el, part, ext) {
+  const dir = part ? `exports/${sanitize(doc.name)}/${sanitize(el.name)}` : `exports/${sanitize(doc.name)}`;
+  const base = sanitize(part ? part.name : el.name).replace(/\.(stl|3mf)$/i, '');
+  return { dir, rel: `${dir}/${base}${ext}` };
+}
+
+// Export from Onshape and write to the stable path. Does not launch anything.
+export async function save({ doc, el, part = null }) {
   await ready;
-  const name = part ? `${el.name} - ${part.name}` : el.name;
   let bytes, ext;
   if (el.elementType === 'PARTSTUDIO') {
     const partFilter = part ? `&partIds=${encodeURIComponent(part.partId)}` : '';
@@ -257,13 +270,19 @@ export async function print({ doc, el, part = null }) {
     throw new Error(`unsupported element type ${el.elementType}`);
   }
 
-  const rel = `exports/${sanitize(name).replace(/\.stl$/i, '')}${ext}`;
+  const { dir, rel } = exportRel(doc, el, part, ext);
+  if (!(await fs.exists(dir, AppData))) await fs.mkdir(dir, { ...AppData, recursive: true });
   await fs.writeFile(rel, bytes, AppData);
-
-  const s = await getSettings();
   const file = await T.path.join(await T.path.appDataDir(), ...rel.split('/'));
-  await T.core.invoke('launch_slicer', { exe: s.bambuPath, file });
   return { file, bytes: bytes.length };
+}
+
+// Export, then open the file in the slicer.
+export async function print(target) {
+  const res = await save(target);
+  const s = await getSettings();
+  await T.core.invoke('launch_slicer', { exe: s.bambuPath, file: res.file });
+  return res;
 }
 
 // ---------- self-test (dev verification hook) ----------

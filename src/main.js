@@ -105,13 +105,7 @@ async function openDoc(d, refresh = false) {
         entry.box.className = 'parts';
         entry.box.hidden = true;
       }
-      if (el.printable) {
-        const btn = document.createElement('button');
-        btn.className = 'primary';
-        btn.textContent = el.elementType === 'PARTSTUDIO' ? 'Print all' : 'Print';
-        btn.onclick = () => sendToPrint(el, btn);
-        row.appendChild(btn);
-      }
+      if (el.printable) addActions(row, el, null, el.elementType === 'PARTSTUDIO' ? 'Print all' : 'Print');
       body.appendChild(row);
       if (entry.box) body.appendChild(entry.box);
       dlgEntries.push(entry);
@@ -145,11 +139,7 @@ function renderParts(entry, items) {
     const row = document.createElement('div');
     row.className = 'el';
     row.innerHTML = `<span class="type">${esc(p.bodyType)}</span><span class="ename">${esc(p.name)}</span>`;
-    const btn = document.createElement('button');
-    btn.className = 'primary';
-    btn.textContent = 'Print';
-    btn.onclick = () => sendToPrint(entry.el, btn, p);
-    row.appendChild(btn);
+    addActions(row, entry.el, p, 'Print');
     entry.box.appendChild(row);
     entry.partRows.push({ p, row });
   }
@@ -228,17 +218,34 @@ function applyDlgFilter(fromInput = false) {
   dlgNote.hidden = !dlgNote.childNodes.length;
 }
 
-async function sendToPrint(el, btn, part = null) {
+const SAVE_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M2 1h9.6L15 4.4V14a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1zm2 1.5V6h7V2.5zM8 9a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg>';
+
+// Save (re-export in place, no slicer launch) + Print buttons for one target.
+function addActions(row, el, part, label) {
+  const save = document.createElement('button');
+  save.className = 'save';
+  save.title = 'Re-export and overwrite the file in place (then use "Reload from disk" in Bambu Studio)';
+  save.innerHTML = SAVE_ICON;
+  save.onclick = () => runAction(save, () => api.save({ doc: currentDoc, el, part }),
+    r => `Saved ${r.file.split(/[\\/]/).pop()} ✓`, 'Save failed', SAVE_ICON);
+  const print = document.createElement('button');
+  print.className = 'primary';
+  print.textContent = label;
+  print.onclick = () => runAction(print, () => api.print({ doc: currentDoc, el, part }),
+    () => 'Sent to Bambu Studio ✓', 'Print failed', esc(label));
+  row.append(save, print);
+}
+
+async function runAction(btn, fn, okMsg, errPrefix, restoreHtml) {
   btn.disabled = true;
   btn.innerHTML = '<span class="spin"></span>';
   try {
-    await api.print({ doc: currentDoc, el, part });
-    toast('Sent to Bambu Studio ✓');
+    toast(okMsg(await fn()));
   } catch (e) {
-    toast('Print failed: ' + e.message, true, 6000);
+    toast(`${errPrefix}: ${e.message}`, true, 6000);
   } finally {
     btn.disabled = false;
-    btn.textContent = part || el.elementType !== 'PARTSTUDIO' ? 'Print' : 'Print all';
+    btn.innerHTML = restoreHtml;
   }
 }
 
