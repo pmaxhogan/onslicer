@@ -84,7 +84,7 @@ pub fn launch(app: &AppHandle, slicers: &Slicers, file: &Path) -> Result<(), Str
         let mut detected = slicers.lock();
         let detected = detected.get_or_insert_with(scan);
         let store = Persistence::open(app)?;
-        let persisted = store.load(detected);
+        let persisted = store.load();
         match persisted.selected.clone() {
             // An explicit selection is never silently swapped for another
             // slicer at launch time; the user is told to pick again instead.
@@ -158,7 +158,7 @@ pub async fn pick_manual_slicer(
     }
 
     let store = Persistence::open(&app)?;
-    let mut persisted = store.load(detected);
+    let mut persisted = store.load();
     add_manual(&mut persisted, detected, &picked);
     let (state, next) = resolve(detected, &persisted, is_file);
     store.save_if_changed(&next)?;
@@ -175,7 +175,7 @@ pub async fn select_slicer(
     let mut detected = slicers.lock();
     let detected = detected.get_or_insert_with(scan);
     let store = Persistence::open(&app)?;
-    let persisted = store.load(detected);
+    let persisted = store.load();
     let (state, mut next) = resolve(detected, &persisted, is_file);
     let entry = state
         .slicers
@@ -196,9 +196,6 @@ pub async fn select_slicer(
 
 const STORE_FILE: &str = "settings.json";
 const STORE_KEY: &str = "slicers";
-/// Pre-multi-slicer setting holding the Bambu Studio path; read once when the
-/// `slicers` key does not exist yet.
-const LEGACY_KEY: &str = "bambuPath";
 
 /// The `slicers` value in settings.json.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
@@ -230,16 +227,9 @@ impl Persistence {
         Ok(Self { store, raw })
     }
 
-    /// The persisted value, or the legacy `bambuPath` migrated into one.
-    fn load(&self, detected: &[Slicer]) -> Persisted {
-        if let Some(persisted) = &self.raw {
-            return persisted.clone();
-        }
-        let legacy = self
-            .store
-            .get(LEGACY_KEY)
-            .and_then(|v| v.as_str().map(str::to_owned));
-        migrate_legacy(legacy.as_deref(), detected, is_file)
+    /// The persisted value, or the empty default when the key is missing.
+    fn load(&self) -> Persisted {
+        self.raw.clone().unwrap_or_default()
     }
 
     fn save_if_changed(&self, next: &Persisted) -> Result<(), String> {
@@ -256,7 +246,7 @@ impl Persistence {
 
 fn current_state(app: &AppHandle, detected: &[Slicer]) -> Result<SlicerState, String> {
     let store = Persistence::open(app)?;
-    let persisted = store.load(detected);
+    let persisted = store.load();
     let (state, next) = resolve(detected, &persisted, is_file);
     store.save_if_changed(&next)?;
     Ok(state)
@@ -392,23 +382,6 @@ fn add_manual(persisted: &mut Persisted, detected: &[Slicer], path: &str) {
         persisted.manual.push(path.to_owned());
     }
     persisted.selected = Some(path.to_owned());
-}
-
-/// First run after the multi-slicer update: carry over the old Bambu Studio
-/// path setting as the selection (and as a manual entry if it is not one of
-/// the detected slicers).
-fn migrate_legacy(
-    legacy: Option<&str>,
-    detected: &[Slicer],
-    is_file: impl Fn(&Path) -> bool,
-) -> Persisted {
-    let mut persisted = Persisted::default();
-    if let Some(path) = legacy.map(str::trim).filter(|p| !p.is_empty()) {
-        if is_file(Path::new(path)) {
-            add_manual(&mut persisted, detected, path);
-        }
-    }
-    persisted
 }
 
 // ---------------------------------------------------------------------------
@@ -1171,33 +1144,6 @@ mod tests {
 
         let (state, _) = resolve(&det, &persisted, files(&["C:/pf/bambu.exe", "D:/m.exe"]));
         assert_eq!(names(&state.slicers), ["Bambu Studio", "m"]);
-    }
-
-    #[test]
-    fn legacy_bambu_path_is_migrated() {
-        let det = vec![detected("Bambu Studio", "C:/pf/bambu.exe")];
-        let exists = files(&["C:/pf/bambu.exe", "E:/portable/bambu-studio.exe"]);
-
-        // Old default path: already detected, just selected.
-        let p = migrate_legacy(Some("C:/pf/bambu.exe"), &det, &exists);
-        assert_eq!(p.manual, Vec::<String>::new());
-        assert_eq!(p.selected.as_deref(), Some("C:/pf/bambu.exe"));
-
-        // Custom path: becomes a manual entry and stays selected.
-        let p = migrate_legacy(Some(" E:/portable/bambu-studio.exe "), &det, &exists);
-        assert_eq!(p.manual, vec!["E:/portable/bambu-studio.exe".to_string()]);
-        let (state, _) = resolve(&det, &p, &exists);
-        assert_eq!(
-            state.selected.as_deref(),
-            Some("E:/portable/bambu-studio.exe")
-        );
-
-        // Missing or stale legacy values migrate to nothing.
-        assert_eq!(migrate_legacy(None, &det, &exists), Persisted::default());
-        assert_eq!(
-            migrate_legacy(Some("Z:/gone.exe"), &det, &exists),
-            Persisted::default()
-        );
     }
 
     #[test]

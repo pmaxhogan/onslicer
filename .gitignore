@@ -6,3 +6,4 @@ exports/
 src-tauri/target/
 src-tauri/gen/
 coverage/
+.claude/worktrees/
