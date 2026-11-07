@@ -42,19 +42,36 @@ function render() {
   }
 }
 
+let docsMeta = '';
+
+// Header line: docs summary plus the locally tracked API call count (Onshape
+// free plan = 2,500 calls/year; the dev portal has the authoritative number).
+async function updateMeta() {
+  const c = await api.getCallStats();
+  const since = c.since ? ` since ${fmtDate(c.since)}` : '';
+  $('#meta').textContent = `${docsMeta} · API calls: ${c.session} this session, ${c.total} total`;
+  $('#meta').title = `${c.total} billable Onshape API calls counted by onslicer${since}. `
+    + 'Authoritative count: cad.onshape.com/user/developer';
+}
+
+// refresh: false (cache), true (incremental: only new/changed docs), 'full'.
 async function loadDocs(refresh = false) {
   $('#refresh').disabled = true;
   try {
-    if (refresh) api.clearThumbUrls();
     const data = await api.getDocs(refresh);
     docs = data.items;
     const v = appVersion ? `v${appVersion} · ` : '';
-    $('#meta').textContent = `${v}${docs.length} docs · ${data.fromCache ? 'cached' : 'fresh'} ${fmtDate(data.fetchedAt)}`;
+    docsMeta = `${v}${docs.length} docs · ${data.fromCache ? 'cached' : 'fresh'} ${fmtDate(data.fetchedAt)}`;
     render();
+    if (refresh) {
+      const n = data.changed;
+      toast(`${n ? `${n} new/changed doc${n === 1 ? '' : 's'}` : 'No changes'} · ${data.newCalls} API call${data.newCalls === 1 ? '' : 's'}`);
+    }
   } catch (e) {
     toast('Failed to load documents: ' + e.message, true, 6000);
   } finally {
     $('#refresh').disabled = false;
+    updateMeta().catch(() => {});
   }
 }
 
@@ -82,6 +99,7 @@ async function openDoc(d, refresh = false) {
   try {
     const data = await api.getElements(d, refresh);
     if (gen !== dlgGen) return;
+    if (data.staleError) toast(`Showing cached tabs (doc changed, refetch failed): ${data.staleError}`, true, 6000);
     const body = $('#dlg-body');
     body.innerHTML = '';
     for (const el of data.items) {
@@ -127,7 +145,13 @@ async function openDoc(d, refresh = false) {
     applyDlgFilter(true);
   } catch (e) {
     if (gen !== dlgGen) return;
-    $('#dlg-body').innerHTML = `<div style="padding:20px;color:#e74c3c">${esc(e.message)}</div>`;
+    // Incremental doc refreshes can't see deletions, so a doc that vanished
+    // from Onshape still has a card until the next full re-list.
+    const gone = /^elements (403|404)\b/.test(e.message)
+      ? '<br><br>If this document was deleted, Shift+click the main refresh button for a full re-list.' : '';
+    $('#dlg-body').innerHTML = `<div style="padding:20px;color:#e74c3c">${esc(e.message)}${gone}</div>`;
+  } finally {
+    if (gen === dlgGen) updateMeta().catch(() => {});
   }
 }
 
@@ -246,6 +270,7 @@ async function runAction(btn, fn, okMsg, errPrefix, restoreHtml) {
   } finally {
     btn.disabled = false;
     btn.innerHTML = restoreHtml;
+    updateMeta().catch(() => {});
   }
 }
 
@@ -288,8 +313,9 @@ async function checkForUpdate() {
 
 // ---------- init ----------
 
-$('#refresh').onclick = () => loadDocs(true);
-$('#dlg-refresh').onclick = () => openDoc(currentDoc, true);
+// Click = incremental refresh (cheap); Shift+click = full re-list.
+$('#refresh').onclick = e => loadDocs(e.shiftKey ? 'full' : true);
+$('#dlg-refresh').onclick = e => openDoc(currentDoc, e.shiftKey ? 'full' : true);
 $('#dlg-close').onclick = () => $('#dlg').close();
 $('#dlg-filter').oninput = () => applyDlgFilter(true);
 $('#search').oninput = render;

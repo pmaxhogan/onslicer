@@ -89,7 +89,7 @@
 <header>
   <h1>on<span>slicer</span></h1>
   <input id="search" type="search" placeholder="Filter documents…">
-  <button id="refresh" title="Re-fetch the document list from Onshape (uses API calls)">⟳ Refresh</button>
+  <button id="refresh" title="Fetch new/changed documents (usually 1 API call, plus 1 per changed thumbnail). Shift+click: full re-list, also drops deleted docs">⟳ Refresh</button>
   <button id="open-settings" title="Settings">⚙</button>
   <div id="meta"></div>
 </header>
@@ -102,8 +102,9 @@
 <div id="note"><div class="inner">
   <b>When to refresh:</b>
   <b>Edited a part's geometry?</b> Nothing — Print always exports live from Onshape.
-  · <b>Added/renamed/deleted a part or tab?</b> ⟳ inside that document's dialog.
-  · <b>Created/renamed/deleted a document?</b> ⟳ Refresh up top (also updates thumbnails).
+  · <b>Created or edited a document?</b> ⟳ Refresh up top - changed docs then refetch their tabs when opened.
+  · <b>Still missing a part or tab?</b> ⟳ inside that document's dialog.
+  · <b>Deleted a document?</b> Shift+click ⟳ Refresh for a full re-list.
 </div></div>
 
 <div id="grid"></div>
@@ -114,7 +115,7 @@
     <h2 id="dlg-title"></h2>
     <input id="dlg-filter" type="text" placeholder="Filter tabs & parts…" autocomplete="off" spellcheck="false"
       title="Matches tab names, and part names in part studios whose parts have been listed (▸ parts)">
-    <button id="dlg-refresh" title="Re-fetch element list (uses 1 API call)">⟳</button>
+    <button id="dlg-refresh" title="Re-fetch tabs (1 API call); keeps part lists of unchanged part studios. Shift+click: also drop every cached part list">⟳</button>
     <button id="dlg-close">✕</button>
   </div>
   <div class="dlg-body" id="dlg-body"></div>

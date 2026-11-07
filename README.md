@@ -6,8 +6,9 @@ Browse your [Onshape](https://www.onshape.com/) models and send them straight to
 - Document grid with thumbnails, filterable
 - Print a whole part studio, a single part, or a composite part
 - STL is exported live from Onshape on every print, so geometry is never stale
-- Aggressive on-disk caching — a typical session uses 1–2 of the
+- Aggressive on-disk caching with incremental refreshes - a refresh normally costs 1 of the
   [2,500 annual API calls](https://onshape-public.github.io/docs/auth/limits/) on a free Onshape account
+  (plus 1 per changed thumbnail); the header shows a running call count
 - Auto-updates from GitHub releases
 
 ## Setup
