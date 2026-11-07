@@ -1,3 +1,5 @@
+pub mod slicers;
+
 /// Launch the slicer executable with a model file. The exe path comes from
 /// user settings, so this can't be expressed as a static shell-plugin scope.
 #[tauri::command]
@@ -20,7 +22,15 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![launch_slicer])
+        .plugin(tauri_plugin_dialog::init())
+        .manage(slicers::Slicers::new())
+        .invoke_handler(tauri::generate_handler![
+            launch_slicer,
+            slicers::list_slicers,
+            slicers::rescan_slicers,
+            slicers::pick_manual_slicer,
+            slicers::select_slicer
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
