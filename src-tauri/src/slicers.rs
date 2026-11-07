@@ -652,8 +652,14 @@ fn resolve_pattern(base: &Path, segments: &[&str]) -> Option<PathBuf> {
                 .then(|| (version_key(&name[prefix.len()..]), name))
         })
         .collect();
-    // Newest first; ties broken by name so the result is deterministic.
-    matches.sort_by(|a, b| b.cmp(a));
+    // Newest first. On equal versions the shorter name wins, so a release
+    // ("Creality Print 7.3") beats a suffixed build ("Creality Print 7.3 Beta");
+    // then by name so the result is deterministic.
+    matches.sort_by(|(va, na), (vb, nb)| {
+        vb.cmp(va)
+            .then_with(|| na.len().cmp(&nb.len()))
+            .then_with(|| na.cmp(nb))
+    });
     matches
         .into_iter()
         .find_map(|(_, name)| resolve_pattern(&base.join(name), rest))
@@ -839,6 +845,14 @@ mod tests {
         let newest = tree.file(&pf, "Creality/Creality Print 6.0/CrealityPrint.exe");
         let found = detect(WINDOWS_CANDIDATES, &Roots(vec![pf]));
         assert_eq!(found, vec![detected("Creality Print", &newest)]);
+
+        // A beta of the same version does not beat the release.
+        let tree = TempTree::new();
+        let pf = tree.root("pf");
+        let release = tree.file(&pf, "Creality/Creality Print 7.3/CrealityPrint.exe");
+        tree.file(&pf, "Creality/Creality Print 7.3 Beta/CrealityPrint.exe");
+        let found = detect(WINDOWS_CANDIDATES, &Roots(vec![pf]));
+        assert_eq!(found, vec![detected("Creality Print", &release)]);
 
         // 5.x had no "Creality" parent folder.
         let tree = TempTree::new();
