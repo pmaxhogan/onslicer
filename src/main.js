@@ -44,13 +44,11 @@ function render() {
 
 let docsMeta = '';
 
-// Header line: docs summary plus the locally tracked API call count (Onshape
-// free plan = 2,500 calls/year; the dev portal has the authoritative number).
 async function updateMeta() {
   const c = await api.getCallStats();
   const since = c.since ? ` since ${fmtDate(c.since)}` : '';
   $('#meta').textContent = `${docsMeta} · API calls: ${c.session} this session, ${c.total} total`;
-  $('#meta').title = `${c.total} billable Onshape API calls counted by onslicer${since}. `
+  $('#meta').title = `${c.total} API calls counted by onslicer${since}. `
     + 'Authoritative count: cad.onshape.com/user/developer';
 }
 

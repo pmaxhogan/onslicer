@@ -1,10 +1,5 @@
 // onslicer data layer — Onshape REST + disk caches + slicer launch, all via
 // Tauri plugins (withGlobalTauri, so everything hangs off window.__TAURI__).
-//
-// Free Onshape accounts get 2,500 API calls/year, so every listing is cached
-// in the app data dir and only refetched on an explicit refresh, and refreshes
-// are incremental: only new/changed docs, thumbnails and part lists cost calls.
-// Onshape bills every 2xx/3xx response (redirect hops included), never 4xx/5xx.
 
 const T = window.__TAURI__;
 const fs = T.fs;
@@ -12,6 +7,7 @@ const BaseDirectory = fs.BaseDirectory;
 const AppData = { baseDir: BaseDirectory.AppData };
 
 const BASE = 'https://cad.onshape.com';
+// TODO: support other slicers or install directories?
 const DEFAULT_BAMBU = 'C:\\Program Files\\Bambu Studio\\bambu-studio.exe';
 
 export let apiCallsThisSession = 0;
@@ -49,8 +45,7 @@ export async function hasKeys() {
 
 // ---------- call accounting ----------
 
-// Mirrors Onshape's billing rule (authenticated 2xx/3xx only) so the header
-// can show roughly where the yearly allocation stands. Onshape's own count at
+// our estimates can show roughly where the yearly allocation stands. Onshape's own count at
 // https://cad.onshape.com/user/developer is authoritative.
 export async function getCallStats() {
   await countChain;
@@ -130,7 +125,7 @@ async function removeMatching(dir, predicate) {
       }
     }
   } catch {
-    /* dir may not exist yet */
+    /* dir may not exist yet. TODO: check the error rather than blindly trusting */
   }
 }
 
@@ -262,7 +257,7 @@ export async function getElements(doc, refresh = false) {
 // ---------- parts ----------
 
 // Disk-cached part list or null. Never hits the API — the dialog filter uses
-// this so typing can match part names without spending any of the call budget.
+// this so typing can match part names without a network round-trip
 export async function peekParts(doc, eid) {
   await ready;
   return readJsonCache(`cache/parts/${doc.id}-${eid}.json`);
@@ -288,7 +283,7 @@ export async function getParts(doc, eid, refresh = false) {
 
 // ---------- thumbnails ----------
 
-// Thumbnails cost a call each and need auth, so they are cached on disk as
+// Thumbnails are cached on disk to avoid network round trip latency, as
 // <docId>-<stamp>.png, where <stamp> is the thumbHref's ?t= value - Onshape
 // bumps it when the thumbnail changes. A refresh therefore only downloads
 // thumbnails of new or changed docs.
@@ -334,8 +329,8 @@ export async function getThumb(doc) {
 // ---------- print ----------
 
 // Stable export path per (doc, element, part), named after the thing itself so
-// Bambu Studio shows a meaningful object name. Because the path never changes,
-// save() can overwrite it and Bambu's "Reload from disk" picks up new geometry:
+// slicer shows a meaningful object name. Because the path never changes,
+// save() can overwrite it and "Reload from disk" picks up new geometry:
 //   exports/<doc>/<tab>.stl            whole part studio or blob
 //   exports/<doc>/<tab>/<part>.stl     single part
 function exportRel(doc, el, part, ext) {

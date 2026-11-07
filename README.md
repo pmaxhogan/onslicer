@@ -1,14 +1,12 @@
 # onslicer
 
-Browse your [Onshape](https://www.onshape.com/) models and send them straight to
+Browse your [Onshape](https://www.onshape.com/) models and send them straight to 
 [Bambu Studio](https://bambulab.com/en/download/studio) — no export → save → import dance.
 
 - Document grid with thumbnails, filterable
 - Print a whole part studio, a single part, or a composite part
 - STL is exported live from Onshape on every print, so geometry is never stale
-- Aggressive on-disk caching with incremental refreshes - a refresh normally costs 1 of the
-  [2,500 annual API calls](https://onshape-public.github.io/docs/auth/limits/) on a free Onshape account
-  (plus 1 per changed thumbnail); the header shows a running call count
+- Aggressive on-disk caching to minimize latency and avoid waiting on network round-trips
 - Auto-updates from GitHub releases
 
 ## Setup
@@ -18,6 +16,8 @@ Browse your [Onshape](https://www.onshape.com/) models and send them straight to
    (read scopes are enough).
 3. Paste the access key + secret into the app's settings (⚙). Keys are stored locally
    and only ever sent to onshape.com.
+
+## TODO: use session from browser?
 
 ## Development
 
