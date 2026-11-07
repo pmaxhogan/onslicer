@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Browse your Onshape models and send them straight to Bambu Studio",
+  "description": "Browse your Onshape models and send them straight to your slicer",
   "license": "MIT",
   "scripts": {
     "tauri": "tauri",
@@ -14,11 +14,14 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "check:ascii": "node scripts/check-ascii.mjs"
+    "check:ascii": "node scripts/check-ascii.mjs",
+    "dev:web": "vite",
+    "build:web": "tsc --noEmit && vite build"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@tauri-apps/cli": "^2",
+    "@tauri-apps/cli": "^2.12.4",
+    "@types/node": "^26.6.6",
     "@vitest/coverage-v8": "^5.1.0",
     "eslint": "^10.14.0",
     "eslint-config-prettier": "^10.1.8",
@@ -26,9 +29,15 @@
     "prettier": "3.9.10",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.72.1",
+    "vite": "^8.3.6",
     "vitest": "^5.1.0"
   },
   "engines": {
     "node": ">=22"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/plugin-process": "^2.4.0",
+    "@tauri-apps/plugin-updater": "^2.14.1"
   }
 }

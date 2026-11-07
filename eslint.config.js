@@ -15,6 +15,7 @@ import tseslint from "typescript-eslint";
 export default tseslint.config(
   {
     ignores: [
+      "dist/**",
       "**/dist/**",
       "**/coverage/**",
       "**/node_modules/**",
@@ -49,7 +50,7 @@ export default tseslint.config(
   },
   // onslicer: src/ is the Tauri webview frontend, so it runs with browser globals.
   {
-    files: ["src/**/*.js"],
+    files: ["src/**/*.ts"],
     languageOptions: { globals: { ...globals.browser } },
   },
   // Must stay last: turns off every rule that would fight Prettier.
