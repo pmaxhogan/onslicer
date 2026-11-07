@@ -13,14 +13,23 @@ automatically) - no export -> save -> import dance.
 ## Setup
 
 1. Grab the latest installer from [Releases](https://github.com/pmaxhogan/onslicer/releases/latest).
-2. Create an API key in the [Onshape developer portal](https://cad.onshape.com/appstore/dev-portal)
-   (read scopes are enough).
-3. Paste the access key + secret into the app's settings (&#x2699;). Secrets are stored in the
-   Windows Credential Manager and only ever sent to onshape.com.
-4. Pick your slicer in the same dialog if the detected one is not the one you want, or add any
-   executable with "Other...".
+2. Open the settings (&#x2699;) and choose how to sign in to Onshape:
+   - **API keys**: create a key pair in the
+     [Onshape developer portal](https://cad.onshape.com/appstore/dev-portal) (read scopes are
+     enough) and paste the access key + secret.
+   - **Email + password**: onslicer signs in the way the Onshape website does and keeps the
+     session; when it expires it signs in again by itself. Accounts with 2FA or SSO cannot use
+     this mode.
+   - **Browser session**: paste the `Cookie` header of any request to cad.onshape.com from your
+     browser's DevTools (Network tab). Paste a fresh one when it expires.
 
-## TODO: use session from browser?
+   Passwords, keys and sessions are stored in the Windows Credential Manager and only ever sent
+   to onshape.com.
+
+3. Pick your slicer in the same dialog. Common slicers (Bambu Studio, OrcaSlicer, PrusaSlicer,
+   Cura, Creality Print and more) are detected from their default install folders and the first
+   one found is selected; refresh rescans, and "Other..." adds any executable. With no slicer
+   available a banner says so and Print is disabled, but Save still works.
 
 ## Development
 
