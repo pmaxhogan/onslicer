@@ -1,20 +1,35 @@
 name: build
 
+# Releases only after the ci workflow finishes green on main, so a red push never
+# ships to installed copies through the updater. workflow_run also runs with a
+# write token for Dependabot merges (ci is dispatched on main after each one), so
+# dependency bumps release too. workflow_dispatch stays for a manual re-release.
 on:
-  push:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
     branches: [main]
   workflow_dispatch:
 
+# Never run two releases at once; a newer green ci on main waits its turn.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   build:
-    # Dependabot-actored pushes get a read-only GITHUB_TOKEN and can't create
-    # releases; their dependency bumps ship with the next regular push instead.
-    if: github.actor != 'dependabot[bot]'
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      contains(fromJSON('["push","workflow_dispatch"]'), github.event.workflow_run.event))
     runs-on: windows-latest
     permissions:
       contents: write
     steps:
+      # Build exactly the commit ci tested, not whatever main points at now.
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: setup node
         uses: actions/setup-node@v7
