@@ -427,27 +427,38 @@ struct Candidate {
 
 /// Windows install locations, in scan order (Bambu Studio first: it was the
 /// only supported slicer before, so it stays the default when present).
+/// Every candidate is tried under %ProgramFiles%, %ProgramFiles(x86)% and
+/// %LOCALAPPDATA%\Programs. Exe names and folders come from the vendors'
+/// installer scripts / CMake targets, winget manifests or uninstall listings;
+/// guesses are marked as such (a wrong guess only means "not detected").
 const WINDOWS_CANDIDATES: &[Candidate] = &[
     Candidate {
+        // NSIS, $PROGRAMFILES64\Bambu Studio (winget Bambulab.Bambustudio).
         name: "Bambu Studio",
         paths: &["Bambu Studio/bambu-studio.exe"],
     },
     Candidate {
+        // CPack NSIS, OrcaSlicer/OrcaSlicer CMakeLists.txt.
         name: "OrcaSlicer",
         paths: &["OrcaSlicer/orca-slicer.exe"],
     },
     Candidate {
+        // Inno Setup, Prusa3D\PrusaSlicer (older per-user installs used
+        // %LOCALAPPDATA%\Programs\Prusa3D\PrusaSlicer).
         name: "PrusaSlicer",
-        paths: &[
-            "Prusa3D/PrusaSlicer/prusa-slicer.exe",
-            "PrusaSlicer/prusa-slicer.exe",
-        ],
+        paths: &["Prusa3D/PrusaSlicer/prusa-slicer.exe"],
     },
     Candidate {
+        // Mostly a portable zip; the MSI (winInstaller.wxs.in) installs to
+        // %ProgramFiles(x86)%\SuperSlicer.
         name: "SuperSlicer",
         paths: &["SuperSlicer/superslicer.exe"],
     },
     Candidate {
+        // One folder per version: "UltiMaker Cura 5.8.1" (5.2.2+),
+        // "Ultimaker Cura 5.0.0" (prefix matched case-insensitively; the exe
+        // is Ultimaker-Cura.exe there, same name to Windows), and
+        // "Ultimaker Cura 4.13.1\Cura.exe" for 4.x.
         name: "UltiMaker Cura",
         paths: &[
             "UltiMaker Cura */UltiMaker-Cura.exe",
@@ -455,51 +466,80 @@ const WINDOWS_CANDIDATES: &[Candidate] = &[
         ],
     },
     Candidate {
+        // 6.x/7.x: Creality\Creality Print 7.3 (CrealityOfficial/CrealityPrint
+        // package.cmake); 5.x: Creality Print 5.1 without the parent folder.
         name: "Creality Print",
-        paths: &["Creality/Creality Print */CrealityPrint.exe"],
+        paths: &[
+            "Creality/Creality Print */CrealityPrint.exe",
+            "Creality Print */CrealityPrint.exe",
+        ],
     },
     Candidate {
+        // CPack NSIS, $PROGRAMFILES64\ElegooSlicer.
         name: "ElegooSlicer",
         paths: &["ElegooSlicer/elegoo-slicer.exe"],
     },
     Candidate {
+        // Inno Setup (uninstall listings).
         name: "Anycubic Slicer Next",
         paths: &["AnycubicSlicerNext/AnycubicSlicerNext.exe"],
     },
     Candidate {
+        // The older Anycubic Slicer; folder spelling varies by version.
+        name: "Anycubic Slicer",
+        paths: &[
+            "AnycubicSlicer/Anycubic-Slicer.exe",
+            "Anycubic Slicer/Anycubic-Slicer.exe",
+        ],
+    },
+    Candidate {
+        // Exe from QIDITECH/QIDIStudio CMake; folder from uninstall listings.
         name: "QIDI Studio",
         paths: &["QIDIStudio/qidi-studio.exe"],
     },
     Candidate {
+        // Exe from QIDITECH/QIDISlicer CMake; folder from uninstall listings.
         name: "QIDISlicer",
         paths: &["QIDISlicer/qidi-slicer.exe"],
     },
     Candidate {
+        // installer.nsi: InstallDir $PROGRAMFILES64\Snapmaker_Orca.
         name: "Snapmaker Orca",
         paths: &["Snapmaker_Orca/snapmaker-orca.exe"],
     },
     Candidate {
-        name: "Orca-Flashforge",
-        paths: &["Orca-Flashforge/orca-flashforge.exe"],
+        // FlashForge's Orca fork (Flash Studio, formerly Orca-Flashforge).
+        // Unverified: the repo names the exe both "flash-studio.exe" and
+        // "flash studio.exe", and the shipped installer may use another folder.
+        name: "Flash Studio",
+        paths: &[
+            "Orca-Flashforge/flash-studio.exe",
+            "Orca-Flashforge/flash studio.exe",
+            "Orca-Flashforge/orca-flashforge.exe",
+        ],
     },
     Candidate {
+        // FlashForge\FlashPrint 5 (uninstall listings).
         name: "FlashPrint",
         paths: &["FlashForge/FlashPrint */FlashPrint.exe"],
     },
     Candidate {
+        // Simplify3D-5.0.1 / Simplify3D-4.1.2 (uninstall listings, forum).
         name: "Simplify3D",
-        paths: &[
-            "Simplify3D Software */Simplify3D.exe",
-            "Simplify3D-*/Simplify3D.exe",
-        ],
+        paths: &["Simplify3D-*/Simplify3D.exe", "Simplify3D/Simplify3D.exe"],
     },
     Candidate {
+        // 5.x: Raise3D\ideaMaker-App (winget); 4.x and older: Raise3D\ideaMaker.
         name: "ideaMaker",
-        paths: &["Raise3D/ideaMaker/ideaMaker.exe"],
+        paths: &[
+            "Raise3D/ideaMaker-App/ideaMaker.exe",
+            "Raise3D/ideaMaker/ideaMaker.exe",
+        ],
     },
 ];
 
-/// macOS app bundles (binary inside), in scan order.
+/// macOS app bundles (binary inside), in scan order. Kept small; anything
+/// else can be added with "Other...".
 const MACOS_CANDIDATES: &[Candidate] = &[
     Candidate {
         name: "Bambu Studio",
@@ -514,8 +554,9 @@ const MACOS_CANDIDATES: &[Candidate] = &[
         paths: &["PrusaSlicer.app/Contents/MacOS/PrusaSlicer"],
     },
     Candidate {
+        // Ultimaker/Cura packaging/MacOS/build_macos.py.
         name: "UltiMaker Cura",
-        paths: &["UltiMaker Cura.app/Contents/MacOS/UltiMaker-Cura"],
+        paths: &["UltiMaker-Cura.app/Contents/MacOS/UltiMaker-Cura"],
     },
 ];
 
@@ -798,6 +839,39 @@ mod tests {
         let newest = tree.file(&pf, "Creality/Creality Print 6.0/CrealityPrint.exe");
         let found = detect(WINDOWS_CANDIDATES, &Roots(vec![pf]));
         assert_eq!(found, vec![detected("Creality Print", &newest)]);
+
+        // 5.x had no "Creality" parent folder.
+        let tree = TempTree::new();
+        let pf = tree.root("pf");
+        let v5 = tree.file(&pf, "Creality Print 5.1/CrealityPrint.exe");
+        let found = detect(WINDOWS_CANDIDATES, &Roots(vec![pf]));
+        assert_eq!(found, vec![detected("Creality Print", &v5)]);
+    }
+
+    #[test]
+    fn candidate_tables_are_well_formed() {
+        for table in [WINDOWS_CANDIDATES, MACOS_CANDIDATES] {
+            let mut names: Vec<&str> = table.iter().map(|c| c.name).collect();
+            names.sort_unstable();
+            names.dedup();
+            assert_eq!(names.len(), table.len(), "duplicate candidate name");
+            for candidate in table {
+                assert!(!candidate.paths.is_empty(), "{}", candidate.name);
+                for path in candidate.paths {
+                    let segments: Vec<&str> = path.split('/').collect();
+                    assert!(segments.iter().all(|s| !s.is_empty()), "{path}");
+                    assert!(segments.iter().all(|s| !s.contains('\\')), "{path}");
+                    let (file, dirs) = segments.split_last().unwrap();
+                    assert!(!file.contains('*'), "{path}: wildcard file name");
+                    for dir in dirs {
+                        assert!(
+                            !dir.contains('*') || (dir.ends_with('*') && dir.len() > 1),
+                            "{path}: '*' only as a non-empty prefix match"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
