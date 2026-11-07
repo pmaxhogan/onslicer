@@ -7,8 +7,10 @@ import type {
   CallStats,
   Doc,
   DocsResult,
+  Element,
   ElementsResult,
   ExportTarget,
+  Part,
   PartsCache,
   PartsResult,
   Refresh,
@@ -44,19 +46,35 @@ export const rescanSlicers = () => invoke<SlicerState>("rescan_slicers");
 export const pickManualSlicer = () => invoke<SlicerState>("pick_manual_slicer");
 export const selectSlicer = (path: string) => invoke<SlicerState>("select_slicer", { path });
 
-// Thumbnails arrive as raw PNG bytes and become object URLs, memoized per doc
-// until its thumbnail href (and so the image) changes.
+// Thumbnails arrive as raw PNG bytes and become object URLs, memoized per
+// item until its thumbnail href (and so the image) changes.
 const thumbUrls = new Map<string, { href: string; url: string | null }>();
 
-export async function getThumb(doc: Doc): Promise<string | null> {
-  if (!doc.thumbHref) return null;
-  const mem = thumbUrls.get(doc.id);
-  if (mem?.href === doc.thumbHref) return mem.url;
-  const bytes = await invoke<ArrayBuffer>("get_thumb", { doc });
+async function memoThumb(
+  key: string,
+  href: string | null | undefined,
+  load: () => Promise<ArrayBuffer>,
+): Promise<string | null> {
+  if (!href) return null;
+  const mem = thumbUrls.get(key);
+  if (mem?.href === href) return mem.url;
+  const bytes = await load();
   const url = bytes.byteLength
     ? URL.createObjectURL(new Blob([bytes], { type: "image/png" }))
     : null;
-  if (mem?.url) URL.revokeObjectURL(mem.url);
-  thumbUrls.set(doc.id, { href: doc.thumbHref, url });
+  const prev = thumbUrls.get(key);
+  if (prev?.url && prev.url !== url) URL.revokeObjectURL(prev.url);
+  thumbUrls.set(key, { href, url });
   return url;
 }
+
+export const getThumb = (doc: Doc) =>
+  memoThumb(`doc:${doc.id}`, doc.thumbHref, () => invoke<ArrayBuffer>("get_thumb", { doc }));
+
+// A tab's thumbnail (part null) or one part's.
+export const getItemThumb = (doc: Doc, el: Element, part: Part | null) =>
+  memoThumb(
+    part ? `part:${doc.id}:${el.id}:${part.partId}` : `el:${doc.id}:${el.id}`,
+    part ? part.thumbHref : el.thumbHref,
+    () => invoke<ArrayBuffer>("get_item_thumb", { doc, el, part }),
+  );

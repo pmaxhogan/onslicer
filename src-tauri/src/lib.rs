@@ -26,6 +26,7 @@ pub fn run() {
             commands::peek_parts,
             commands::get_parts,
             commands::get_thumb,
+            commands::get_item_thumb,
             commands::save_export,
             commands::print_export,
             commands::get_call_stats,

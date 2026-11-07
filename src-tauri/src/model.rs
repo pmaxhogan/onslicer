@@ -46,6 +46,9 @@ pub struct Element {
     pub microversion_id: Option<String>,
     #[serde(default)]
     pub printable: bool,
+    /// The 300x170 thumbnail, when Onshape has one for this tab.
+    #[serde(default)]
+    pub thumb_href: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -58,6 +61,9 @@ pub struct Part {
     pub body_type: String,
     #[serde(default)]
     pub is_mesh: bool,
+    /// The 300x170 thumbnail, when Onshape has one for this part.
+    #[serde(default)]
+    pub thumb_href: Option<String>,
 }
 
 /// cache/docs.json
@@ -89,6 +95,10 @@ pub struct ElementsCache {
     /// The document's modifiedAt when this list was fetched.
     #[serde(default)]
     pub doc_modified_at: Option<String>,
+    /// Fetched with thumbnail hrefs. A list cached before thumbnails existed
+    /// lacks them and is refetched once (see `elements_stale`).
+    #[serde(default)]
+    pub with_thumbs: bool,
     pub items: Vec<Element>,
 }
 
@@ -108,6 +118,9 @@ pub struct ElementsResult {
 #[serde(rename_all = "camelCase")]
 pub struct PartsCache {
     pub fetched_at: String,
+    /// Fetched with thumbnail hrefs; a list without them counts as a cache miss.
+    #[serde(default)]
+    pub with_thumbs: bool,
     pub items: Vec<Part>,
 }
 
@@ -219,35 +232,59 @@ pub fn blob_ext(data_type: Option<&str>, name: &str) -> &'static str {
 
 /// Whether a cached element list must be refetched for a document whose
 /// current modifiedAt is `doc_modified_at`. A list without a recorded
-/// docModifiedAt is stale.
+/// docModifiedAt, or fetched without thumbnails, is stale.
 pub fn elements_stale(old: &ElementsCache, doc_modified_at: Option<&str>) -> bool {
+    if !old.with_thumbs {
+        return true;
+    }
     match doc_modified_at {
         None => false,
         Some(now) => old.doc_modified_at.as_deref() != Some(now),
     }
 }
 
-/// Thumbnail cache key `<docId>-<stamp>`, where the stamp is the thumbnail
-/// href's `t` parameter (Onshape bumps it when the thumbnail changes), or `0`.
-pub fn thumb_key(doc_id: &str, thumb_href: Option<&str>) -> String {
-    let stamp = thumb_href
-        .and_then(|href| Url::parse(href).ok())
-        .and_then(|url| {
-            url.query_pairs()
-                .find(|(k, _)| k == "t")
-                .map(|(_, v)| v.into_owned())
-        })
-        .filter(|t| !t.is_empty());
-    match stamp {
-        Some(t) => {
-            let clean: String = t
-                .chars()
-                .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
-                .collect();
-            format!("{doc_id}-{clean}")
-        }
-        None => format!("{doc_id}-0"),
+/// Thumbnail cache key `<prefix>-<stamp>`. The stamp changes whenever the
+/// image does: the href's `t` parameter (documents and tabs, bumped by Onshape
+/// on change), else the content hash in a `/thumbnails/<hash>/s/<size>` path
+/// (parts), else `0`. `prefix` must already be file-name safe.
+pub fn thumb_key(prefix: &str, thumb_href: Option<&str>) -> String {
+    let url = thumb_href.and_then(|href| Url::parse(href).ok());
+    let t = url.as_ref().and_then(|url| {
+        url.query_pairs()
+            .find(|(k, _)| k == "t")
+            .map(|(_, v)| v.into_owned())
+    });
+    let hash = || {
+        let mut segs = url.as_ref()?.path_segments()?;
+        segs.find(|s| *s == "thumbnails")?;
+        let h = segs.next()?;
+        (h.len() >= 16 && h.bytes().all(|b| b.is_ascii_hexdigit())).then(|| h.to_owned())
+    };
+    let stamp: String = t
+        .filter(|t| !t.is_empty())
+        .or_else(hash)
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    if stamp.is_empty() {
+        format!("{prefix}-0")
+    } else {
+        format!("{prefix}-{stamp}")
     }
+}
+
+/// A part id as a file-name segment. Part ids are short alphanumeric strings in
+/// practice; anything else is replaced by a hex hash of the id.
+pub fn part_file_id(part_id: &str) -> String {
+    if check_id("part", part_id).is_ok() {
+        return part_id.to_owned();
+    }
+    // FNV-1a: stable across runs and builds, unlike std's DefaultHasher.
+    let hash = part_id.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    });
+    format!("x{hash:016x}")
 }
 
 /// Stable export path per (doc, element, part), relative to the app data dir
@@ -299,6 +336,7 @@ mod tests {
             data_type: data_type.map(Into::into),
             microversion_id: None,
             printable: false,
+            thumb_href: None,
         }
     }
 
@@ -306,6 +344,7 @@ mod tests {
         ElementsCache {
             fetched_at: "2026-01-15T00:00:00Z".into(),
             doc_modified_at: doc_modified_at.map(Into::into),
+            with_thumbs: true,
             items: vec![],
         }
     }
@@ -384,6 +423,42 @@ mod tests {
             thumb_key("d1", Some("https://cad.onshape.com/thumb?t=12:34-ab")),
             "d1-1234ab"
         );
+    }
+
+    #[test]
+    fn thumb_key_uses_the_content_hash_of_a_part_thumbnail() {
+        assert_eq!(
+            thumb_key(
+                "d1-e1-JJD",
+                Some("https://cad.onshape.com/api/thumbnails/dcbf8fe354db4fbf7da6a914ee1e69de4870c8ae/s/300x170")
+            ),
+            "d1-e1-JJD-dcbf8fe354db4fbf7da6a914ee1e69de4870c8ae"
+        );
+        // A short or non-hex segment is not a content hash.
+        assert_eq!(
+            thumb_key(
+                "p",
+                Some("https://cad.onshape.com/api/thumbnails/d/abc/s/300x170")
+            ),
+            "p-0"
+        );
+    }
+
+    #[test]
+    fn part_file_id_keeps_plain_ids_and_hashes_the_rest() {
+        assert_eq!(part_file_id("JJD"), "JJD");
+        let odd = part_file_id("J/../D");
+        assert!(odd.starts_with('x') && odd.len() == 17);
+        assert!(check_id("part", &odd).is_ok());
+        assert_eq!(odd, part_file_id("J/../D"));
+    }
+
+    #[test]
+    fn elements_fetched_without_thumbnails_are_stale() {
+        let mut old = cache(Some("2026-01-01T00:00:00Z"));
+        old.with_thumbs = false;
+        assert!(elements_stale(&old, Some("2026-01-01T00:00:00Z")));
+        assert!(elements_stale(&old, None));
     }
 
     #[test]

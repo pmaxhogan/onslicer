@@ -4,7 +4,7 @@ Browse your [Onshape](https://www.onshape.com/) models and send them straight to
 ([Bambu Studio](https://bambulab.com/en/download/studio) and other common slicers are detected
 automatically) - no export -> save -> import dance.
 
-- Document grid with thumbnails, filterable
+- Document grid with thumbnails, filterable; each document opens as a gallery of its tabs and parts
 - Print a whole part studio, a single part, or a composite part
 - STL is exported live from Onshape on every print, so geometry is never stale
 - Aggressive on-disk caching to minimize latency and avoid waiting on network round-trips

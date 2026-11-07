@@ -22,6 +22,7 @@ export interface Element {
   dataType: string | null;
   microversionId: string | null;
   printable: boolean;
+  thumbHref: string | null;
 }
 
 export interface Part {
@@ -29,6 +30,7 @@ export interface Part {
   name: string;
   bodyType: string;
   isMesh: boolean;
+  thumbHref: string | null;
 }
 
 // invoke("get_docs", { refresh })
@@ -44,6 +46,7 @@ export interface DocsResult {
 export interface ElementsResult {
   fetchedAt: string;
   docModifiedAt: string | null;
+  withThumbs: boolean;
   items: Element[];
   fromCache: boolean;
   staleError?: string;
@@ -52,6 +55,7 @@ export interface ElementsResult {
 // invoke("peek_parts", { docId, elementId }) returns PartsCache | null
 export interface PartsCache {
   fetchedAt: string;
+  withThumbs: boolean;
   items: Part[];
 }
 

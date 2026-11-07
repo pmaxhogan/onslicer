@@ -51,6 +51,19 @@ pub async fn get_thumb(app: AppHandle, doc: Doc) -> Result<Response, String> {
     Ok(Response::new(bytes.unwrap_or_default()))
 }
 
+/// Raw PNG bytes of a tab's thumbnail (`part` null) or one part's; empty when
+/// it has none.
+#[tauri::command]
+pub async fn get_item_thumb(
+    app: AppHandle,
+    doc: Doc,
+    el: Element,
+    part: Option<Part>,
+) -> Result<Response, String> {
+    let bytes = data::get_item_thumb(&app, &doc, &el, part.as_ref()).await?;
+    Ok(Response::new(bytes.unwrap_or_default()))
+}
+
 /// Re-export in place without opening anything.
 #[tauri::command]
 pub async fn save_export(app: AppHandle, target: ExportTarget) -> Result<SaveResult, String> {

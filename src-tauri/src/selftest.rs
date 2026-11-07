@@ -155,6 +155,22 @@ async fn steps(app: &AppHandle, out: &mut Vec<Step>) -> Result<(), String> {
             .collect::<Vec<_>>()
             .join(", "),
     );
+    let is_png = |b: &Option<Vec<u8>>| b.as_deref().is_some_and(|b| b.starts_with(b"\x89PNG"));
+    let tab_thumb = data::get_item_thumb(app, &doc, &ps, None).await?;
+    step(
+        "tab-thumb",
+        is_png(&tab_thumb),
+        format!("{} bytes", tab_thumb.as_ref().map_or(0, Vec::len)),
+    );
+    let part_thumb = match parts.data.items.first() {
+        Some(p) => data::get_item_thumb(app, &doc, &ps, Some(p)).await?,
+        None => None,
+    };
+    step(
+        "part-thumb",
+        is_png(&part_thumb),
+        format!("{} bytes", part_thumb.as_ref().map_or(0, Vec::len)),
+    );
     let solid = parts
         .data
         .items

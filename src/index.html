@@ -214,57 +214,96 @@
         max-height: 60vh;
         overflow-y: auto;
       }
-      .el {
+      #dlg {
+        width: min(1100px, 94vw);
+      }
+      #dlg .dlg-body {
+        max-height: 76vh;
+        padding-top: 16px;
+      }
+      .dgrid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+        gap: 12px;
+      }
+      .pgrid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+        gap: 10px;
+      }
+      .card.item {
+        cursor: default;
+        display: flex;
+        flex-direction: column;
+      }
+      .card.item:hover {
+        border-color: var(--border);
+        transform: none;
+      }
+      .card.item.clickable {
+        cursor: pointer;
+      }
+      .card.item.clickable:hover,
+      .card.item.open {
+        border-color: var(--accent);
+      }
+      .card.dim .thumb {
+        opacity: 0.55;
+      }
+      .card.dim .name {
+        color: var(--muted);
+      }
+      .card .thumb {
+        position: relative;
+      }
+      .card .badge {
+        position: absolute;
+        top: 6px;
+        left: 6px;
+        font-size: 11px;
+        background: rgba(22, 24, 29, 0.82);
+        border-radius: 5px;
+        padding: 1px 7px;
+        white-space: nowrap;
+      }
+      .card.item .info {
+        padding: 8px 10px 6px;
+        flex: 1;
+      }
+      .card .actions {
         display: flex;
         align-items: center;
-        gap: 10px;
-        padding: 9px 4px;
-        border-bottom: 1px solid var(--border);
+        gap: 6px;
+        padding: 0 10px 10px;
       }
-      .el:last-child {
-        border-bottom: none;
-      }
-      .el .type {
-        font-size: 11px;
-        color: var(--muted);
-        background: var(--panel-2);
-        border-radius: 5px;
-        padding: 2px 7px;
-        white-space: nowrap;
-      }
-      .el .ename {
+      .card .actions .grow {
         flex: 1;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
       }
-      .el.dim {
-        color: var(--muted);
+      .card .actions button {
+        padding: 4px 10px;
+        font-size: 12.5px;
       }
-      .el .expand {
-        padding: 4px 9px;
-        font-size: 12px;
-      }
-      .el .save {
+      .card .actions .save {
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        padding: 6px 8px;
+        padding: 5px 8px;
       }
-      .el .save svg {
+      .card .actions .save svg {
         display: block;
       }
       .parts {
-        margin-left: 18px;
-        border-left: 2px solid var(--border);
+        grid-column: 1 / -1;
+        background: var(--bg);
+        border: 1px solid var(--accent);
+        border-radius: 10px;
+        padding: 12px;
       }
-      .parts .el {
-        border-bottom: none;
-        padding: 5px 4px 5px 12px;
+      .parts .card {
+        background: var(--panel);
       }
-      .parts .type {
-        background: transparent;
-        border: 1px solid var(--border);
+      .parts .card .name {
+        font-size: 13.5px;
       }
       .dlg-note {
         display: flex;
@@ -463,7 +502,7 @@
         />
         <button
           id="dlg-refresh"
-          title="Re-fetch tabs (1 API call); keeps part lists of unchanged part studios. Shift+click: also drop every cached part list"
+          title="Re-fetch tabs (1 API call, plus 1 per changed thumbnail shown); keeps part lists of unchanged part studios. Shift+click: also drop every cached part list"
         >
           &#x27F3;
         </button>

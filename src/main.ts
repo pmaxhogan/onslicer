@@ -66,22 +66,27 @@ function render(): void {
     card.innerHTML = `
       <div class="noimg">\u2026</div>
       <div class="info"><div class="name">${esc(d.name)}</div><div class="date">${fmtDate(d.modifiedAt)}</div></div>`;
-    const placeholder = card.querySelector<HTMLElement>(".noimg");
-    const noPreview = () => {
-      if (placeholder) placeholder.textContent = "no preview";
-    };
-    api
-      .getThumb(d)
-      .then((url) => {
-        if (!url) return noPreview();
-        const img = document.createElement("img");
-        img.src = url;
-        placeholder?.replaceWith(img);
-      })
-      .catch(noPreview);
+    fillThumb(card, () => api.getThumb(d));
     card.onclick = () => void openDoc(d);
     grid.appendChild(card);
   }
+}
+
+// Swaps the card's `.noimg` placeholder for the loaded image, or says there
+// is none.
+function fillThumb(card: HTMLElement, load: () => Promise<string | null>): void {
+  const placeholder = card.querySelector<HTMLElement>(".noimg");
+  if (!placeholder) return;
+  const noPreview = () => (placeholder.textContent = "no preview");
+  load()
+    .then((url) => {
+      if (!url) return noPreview();
+      const img = document.createElement("img");
+      img.src = url;
+      img.alt = "";
+      placeholder.replaceWith(img);
+    })
+    .catch(noPreview);
 }
 
 let docsMeta = "";
@@ -208,10 +213,11 @@ async function rescanSlicers(): Promise<void> {
 
 // ---------- document dialog ----------
 
-// One entry per element row. Part studios also carry their parts box; `parts`
-// is null until the list is loaded (from disk cache or an explicit fetch).
-// `expanded` is the user's toggle; `autoExpanded` is set by the filter when a
-// part name matches, and is cleared by the user's next toggle or filter edit.
+// One entry per tab card. Part studios also carry their parts box (a
+// full-width grid row under the card); `parts` is null until the list is
+// loaded (from disk cache or an explicit fetch). `expanded` is the user's
+// toggle; `autoExpanded` is set by the filter when a part name matches, and is
+// cleared by the user's next toggle or filter edit.
 interface Entry {
   el: Element;
   row: HTMLElement;
@@ -227,12 +233,53 @@ let dlgEntries: Entry[] = [];
 let dlgNote: HTMLElement | null = null;
 let dlgGen = 0;
 
+// Thumbnails in the dialog load when their card scrolls into view (or is
+// unhidden by the filter or an expand), so a big part studio costs API calls
+// only for the parts actually looked at. Each image is 1 call, then cached.
+const thumbLoads = new WeakMap<globalThis.Element, () => void>();
+let thumbObserver: IntersectionObserver | null = null;
+
+function lazyThumb(card: HTMLElement, load: () => Promise<string | null>): void {
+  thumbLoads.set(card, () => fillThumb(card, load));
+  thumbObserver?.observe(card);
+}
+
+function resetThumbObserver(): void {
+  thumbObserver?.disconnect();
+  thumbObserver = new IntersectionObserver(
+    (seen, obs) => {
+      for (const s of seen) {
+        if (!s.isIntersecting) continue;
+        obs.unobserve(s.target);
+        thumbLoads.get(s.target)?.();
+        thumbLoads.delete(s.target);
+      }
+    },
+    { root: $("#dlg-body"), rootMargin: "200px" },
+  );
+}
+
+// A gallery card: image placeholder with a type badge, the name, and an
+// actions row the caller fills.
+function itemCard(name: string, badge: string): { card: HTMLElement; actions: HTMLElement } {
+  const card = document.createElement("div");
+  card.className = "card item";
+  card.innerHTML = `
+    <div class="thumb"><div class="noimg">\u2026</div><span class="badge">${esc(badge)}</span></div>
+    <div class="info"><div class="name" title="${esc(name)}">${esc(name)}</div></div>
+    <div class="actions"></div>`;
+  const actions = card.querySelector<HTMLElement>(".actions");
+  if (!actions) throw new Error("card without actions");
+  return { card, actions };
+}
+
 async function openDoc(d: Doc, refresh: Refresh = "none"): Promise<void> {
   const gen = ++dlgGen;
   currentDoc = d;
   dlgEntries = [];
   dlgNote = null;
   $("#dlg-title").textContent = d.name;
+  resetThumbObserver();
   $("#dlg-body").innerHTML =
     '<div style="padding:20px;text-align:center"><span class="spin"></span></div>';
   const dlg = $<HTMLDialogElement>("#dlg");
@@ -247,13 +294,19 @@ async function openDoc(d: Doc, refresh: Refresh = "none"): Promise<void> {
       toast(`Showing cached tabs (doc changed, refetch failed): ${data.staleError}`, true, 6000);
     const body = $("#dlg-body");
     body.innerHTML = "";
+    if (!data.items.length) {
+      body.innerHTML = '<div style="padding:20px;color:var(--muted)">Empty document</div>';
+      return;
+    }
+    const grid = document.createElement("div");
+    grid.className = "dgrid";
+    body.appendChild(grid);
     for (const el of data.items) {
-      const row = document.createElement("div");
-      row.className = "el" + (el.printable ? "" : " dim");
-      row.innerHTML = `<span class="type">${esc(elementTypeLabel(el))}</span><span class="ename">${esc(el.name)}</span>`;
+      const { card, actions } = itemCard(el.name, elementTypeLabel(el));
+      if (!el.printable) card.classList.add("dim");
       const entry: Entry = {
         el,
-        row,
+        row: card,
         box: null,
         expandBtn: null,
         parts: null,
@@ -265,23 +318,28 @@ async function openDoc(d: Doc, refresh: Refresh = "none"): Promise<void> {
         const expand = document.createElement("button");
         expand.className = "expand";
         expand.textContent = "\u25b8 parts";
-        expand.title = "List individual parts (1 API call, then cached)";
+        expand.title = "Show individual parts (1 API call to list them, then cached)";
         expand.onclick = () => void togglePartList(entry);
-        row.appendChild(expand);
+        actions.appendChild(expand);
         entry.expandBtn = expand;
         entry.box = document.createElement("div");
         entry.box.className = "parts";
         entry.box.hidden = true;
+        // The whole card toggles the parts, except clicks on its buttons.
+        card.classList.add("clickable");
+        card.onclick = (ev) => {
+          if (!(ev.target as HTMLElement).closest("button")) void togglePartList(entry);
+        };
       }
+      const spacer = document.createElement("span");
+      spacer.className = "grow";
+      actions.appendChild(spacer);
       if (el.printable)
-        addActions(row, el, null, el.elementType === "PARTSTUDIO" ? "Print all" : "Print");
-      body.appendChild(row);
-      if (entry.box) body.appendChild(entry.box);
+        addActions(actions, el, null, el.elementType === "PARTSTUDIO" ? "Print all" : "Print");
+      lazyThumb(card, () => api.getItemThumb(d, el, null));
+      grid.appendChild(card);
+      if (entry.box) grid.appendChild(entry.box);
       dlgEntries.push(entry);
-    }
-    if (!data.items.length) {
-      body.innerHTML = '<div style="padding:20px;color:var(--muted)">Empty document</div>';
-      return;
     }
     dlgNote = document.createElement("div");
     dlgNote.className = "dlg-note";
@@ -315,19 +373,27 @@ async function openDoc(d: Doc, refresh: Refresh = "none"): Promise<void> {
 function renderParts(entry: Entry, items: Part[]): void {
   const box = entry.box;
   if (!box) return;
+  const doc = currentDoc;
   entry.parts = items;
   entry.partRows = [];
   box.innerHTML = "";
-  for (const p of items) {
-    const row = document.createElement("div");
-    row.className = "el";
-    row.innerHTML = `<span class="type">${esc(p.bodyType)}</span><span class="ename">${esc(p.name)}</span>`;
-    addActions(row, entry.el, p, "Print");
-    box.appendChild(row);
-    entry.partRows.push({ p, row });
-  }
-  if (!items.length)
+  if (!items.length || !doc) {
     box.innerHTML = '<div style="padding:8px 12px;color:var(--muted)">No parts</div>';
+    return;
+  }
+  const grid = document.createElement("div");
+  grid.className = "pgrid";
+  box.appendChild(grid);
+  for (const p of items) {
+    const { card, actions } = itemCard(p.name, p.bodyType);
+    const spacer = document.createElement("span");
+    spacer.className = "grow";
+    actions.appendChild(spacer);
+    addActions(actions, entry.el, p, "Print");
+    lazyThumb(card, () => api.getItemThumb(doc, entry.el, p));
+    grid.appendChild(card);
+    entry.partRows.push({ p, row: card });
+  }
 }
 
 async function loadParts(entry: Entry): Promise<boolean> {
@@ -378,6 +444,7 @@ function applyDlgFilter(fromInput = false): void {
     if (fromInput) e.autoExpanded = partOnly;
     const open = !e.row.hidden && (e.expanded || e.autoExpanded);
     e.box.hidden = !open;
+    e.row.classList.toggle("open", open);
     e.expandBtn.textContent = open ? "\u25be parts" : "\u25b8 parts";
     for (const { p, row } of e.partRows) row.hidden = partOnly && !hit(p.name);
   }

@@ -5,6 +5,8 @@
 //!   cache/elements/<docId>.json           element (tab) list per document
 //!   cache/parts/<docId>-<elementId>.json  part list per part studio
 //!   cache/thumbs/<docId>-<stamp>.png      document thumbnails
+//!   cache/thumbs/elements/<docId>-<elementId>-<stamp>.png        tab thumbnails
+//!   cache/thumbs/parts/<docId>-<elementId>-<partId>-<stamp>.png  part thumbnails
 //!   exports/...                           exported models, see export_rel
 
 use std::collections::{HashMap, HashSet};
@@ -156,19 +158,23 @@ struct RawThumbSize {
     href: Option<String>,
 }
 
-fn doc_item(d: RawDoc) -> Doc {
-    let sizes = d.thumbnail.and_then(|t| t.sizes).unwrap_or_default();
-    let thumb_href = sizes
+/// The 300x170 size (the gallery card's aspect ratio), else the first one.
+fn pick_thumb(thumb: Option<RawThumbnail>) -> Option<String> {
+    let sizes = thumb.and_then(|t| t.sizes).unwrap_or_default();
+    sizes
         .iter()
         .find(|s| s.size.as_deref() == Some("300x170"))
         .or(sizes.first())
-        .and_then(|s| s.href.clone());
+        .and_then(|s| s.href.clone())
+}
+
+fn doc_item(d: RawDoc) -> Doc {
     Doc {
         id: d.id,
         name: d.name.unwrap_or_default(),
         modified_at: d.modified_at,
         workspace_id: d.default_workspace.and_then(|w| w.id),
-        thumb_href,
+        thumb_href: pick_thumb(d.thumbnail),
     }
 }
 
@@ -263,6 +269,7 @@ struct RawElement {
     element_type: Option<String>,
     data_type: Option<String>,
     microversion_id: Option<String>,
+    thumbnail_info: Option<RawThumbnail>,
 }
 
 fn visible(mut data: ElementsCache) -> ElementsCache {
@@ -274,7 +281,10 @@ async fn fetch_elements(app: &AppHandle, doc: &Doc) -> Result<Vec<Element>, Stri
     let ws = workspace(doc)?;
     let res = fetch(
         app,
-        &format!("/api/v6/documents/d/{}/w/{ws}/elements", doc.id),
+        &format!(
+            "/api/v6/documents/d/{}/w/{ws}/elements?withThumbnails=true",
+            doc.id
+        ),
         JSON_ACCEPT,
     )
     .await?;
@@ -295,6 +305,7 @@ async fn fetch_elements(app: &AppHandle, doc: &Doc) -> Result<Vec<Element>, Stri
                 element_type,
                 data_type,
                 microversion_id: e.microversion_id,
+                thumb_href: pick_thumb(e.thumbnail_info),
             }
         })
         .collect())
@@ -338,6 +349,7 @@ pub async fn get_elements(
     let data = ElementsCache {
         fetched_at: now_iso(),
         doc_modified_at: doc.modified_at.clone(),
+        with_thumbs: true,
         items,
     };
 
@@ -387,12 +399,20 @@ struct RawPart {
     name: Option<String>,
     body_type: Option<String>,
     is_mesh: Option<bool>,
+    thumbnail_info: Option<RawThumbnail>,
 }
 
 pub fn parts_path(app: &AppHandle, doc_id: &str, element_id: &str) -> Result<PathBuf, String> {
     check_id("document", doc_id)?;
     check_id("element", element_id)?;
     data_path(app, &format!("cache/parts/{doc_id}-{element_id}.json"))
+}
+
+/// A cached part list, unless it predates thumbnails (then it is refetched).
+async fn read_parts(path: &Path) -> Option<PartsCache> {
+    read_json::<PartsCache>(path)
+        .await
+        .filter(|p| p.with_thumbs)
 }
 
 /// Disk-cached part list or None. Never hits the API, so the dialog filter can
@@ -402,7 +422,7 @@ pub async fn peek_parts(
     doc_id: &str,
     element_id: &str,
 ) -> Result<Option<PartsCache>, String> {
-    Ok(read_json(&parts_path(app, doc_id, element_id)?).await)
+    Ok(read_parts(&parts_path(app, doc_id, element_id)?).await)
 }
 
 pub async fn get_parts(
@@ -413,7 +433,7 @@ pub async fn get_parts(
 ) -> Result<PartsResult, String> {
     let path = parts_path(app, &doc.id, element_id)?;
     if !refresh {
-        if let Some(data) = read_json(&path).await {
+        if let Some(data) = read_parts(&path).await {
             return Ok(PartsResult {
                 data,
                 from_cache: true,
@@ -423,7 +443,10 @@ pub async fn get_parts(
     let ws = workspace(doc)?;
     let res = fetch(
         app,
-        &format!("/api/v6/parts/d/{}/w/{ws}/e/{element_id}", doc.id),
+        &format!(
+            "/api/v6/parts/d/{}/w/{ws}/e/{element_id}?withThumbnails=true",
+            doc.id
+        ),
         JSON_ACCEPT,
     )
     .await?;
@@ -433,6 +456,7 @@ pub async fn get_parts(
     let raw: Vec<RawPart> = body_json("parts", res).await?;
     let data = PartsCache {
         fetched_at: now_iso(),
+        with_thumbs: true,
         items: raw
             .into_iter()
             .map(|p| Part {
@@ -440,6 +464,7 @@ pub async fn get_parts(
                 name: p.name.unwrap_or_default(),
                 body_type: p.body_type.unwrap_or_default(),
                 is_mesh: p.is_mesh.unwrap_or(false),
+                thumb_href: pick_thumb(p.thumbnail_info),
             })
             .collect(),
     };
@@ -457,11 +482,52 @@ pub async fn get_parts(
 /// or changed docs.
 pub async fn get_thumb(app: &AppHandle, doc: &Doc) -> Result<Option<Vec<u8>>, String> {
     check_id("document", &doc.id)?;
-    let Some(href) = doc.thumb_href.as_deref() else {
+    cached_thumb(app, "cache/thumbs", &doc.id, doc.thumb_href.as_deref()).await
+}
+
+/// PNG bytes of a tab's thumbnail (`part` None) or of one part's, or None when
+/// it has none. Cached like document thumbnails, in their own directories so a
+/// document thumbnail's cleanup never touches them.
+pub async fn get_item_thumb(
+    app: &AppHandle,
+    doc: &Doc,
+    el: &Element,
+    part: Option<&Part>,
+) -> Result<Option<Vec<u8>>, String> {
+    check_id("document", &doc.id)?;
+    check_id("element", &el.id)?;
+    match part {
+        None => {
+            let prefix = format!("{}-{}", doc.id, el.id);
+            cached_thumb(
+                app,
+                "cache/thumbs/elements",
+                &prefix,
+                el.thumb_href.as_deref(),
+            )
+            .await
+        }
+        Some(p) => {
+            let prefix = format!("{}-{}-{}", doc.id, el.id, part_file_id(&p.part_id));
+            cached_thumb(app, "cache/thumbs/parts", &prefix, p.thumb_href.as_deref()).await
+        }
+    }
+}
+
+/// `<dir>/<prefix>-<stamp>.png`, downloaded from `href` on a miss. A download
+/// replaces the older stamps of the same prefix; the trailing '-' keeps that
+/// cleanup from matching another item whose prefix extends this one.
+async fn cached_thumb(
+    app: &AppHandle,
+    dir: &str,
+    prefix: &str,
+    href: Option<&str>,
+) -> Result<Option<Vec<u8>>, String> {
+    let Some(href) = href else {
         return Ok(None);
     };
-    let key = thumb_key(&doc.id, Some(href));
-    let path = data_path(app, &format!("cache/thumbs/{key}.png"))?;
+    let key = thumb_key(prefix, Some(href));
+    let path = data_path(app, &format!("{dir}/{key}.png"))?;
     match tokio::fs::read(&path).await {
         Ok(bytes) => return Ok(Some(bytes)),
         Err(e) if e.kind() == ErrorKind::NotFound => {}
@@ -472,11 +538,8 @@ pub async fn get_thumb(app: &AppHandle, doc: &Doc) -> Result<Option<Vec<u8>>, St
         return Ok(None);
     }
     let bytes = body_bytes(res).await?;
-    let prefix = format!("{}-", doc.id);
-    remove_matching(&data_path(app, "cache/thumbs")?, |name| {
-        name.starts_with(&prefix)
-    })
-    .await?;
+    let old = format!("{prefix}-");
+    remove_matching(&data_path(app, dir)?, |name| name.starts_with(&old)).await?;
     write_file(&path, &bytes).await?;
     Ok(Some(bytes))
 }
