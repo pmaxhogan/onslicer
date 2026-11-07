@@ -3,11 +3,13 @@ import { defineConfig } from "vite";
 // Tauri's standard Vite setup, with the page and its sources in src/. Tauri dev
 // loads http://localhost:1420 (tauri.conf.json devUrl), so the port is fixed.
 const host = process.env.TAURI_DEV_HOST;
+// Set by the Tauri CLI for `tauri dev` and `tauri build --debug`.
+const debug = process.env.TAURI_ENV_DEBUG === "true";
 
 export default defineConfig({
   root: "src",
   clearScreen: false,
-  envPrefix: ["VITE_", "TAURI_ENV_*"],
+  envPrefix: ["VITE_", "TAURI_ENV_"],
   server: {
     port: 1420,
     strictPort: true,
@@ -20,7 +22,7 @@ export default defineConfig({
     emptyOutDir: true,
     // WebView2 on Windows is Chromium; 105 is Tauri's documented floor.
     target: "chrome105",
-    minify: !process.env.TAURI_ENV_DEBUG,
-    sourcemap: Boolean(process.env.TAURI_ENV_DEBUG),
+    minify: !debug,
+    sourcemap: debug,
   },
 });

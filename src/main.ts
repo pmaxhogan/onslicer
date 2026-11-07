@@ -544,6 +544,10 @@ async function saveSettings(): Promise<void> {
 // ---------- auto-update ----------
 
 async function checkForUpdate(): Promise<void> {
+  // A debug build is always "older" than the latest release (its version is
+  // the 0.1.0 placeholder), and installing would replace the user's installed
+  // app, so only release builds update themselves.
+  if (import.meta.env.TAURI_ENV_DEBUG === "true") return;
   try {
     const update = await check();
     if (update) {
