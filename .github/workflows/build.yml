@@ -28,7 +28,7 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: './src-tauri -> target'
+          workspaces: "./src-tauri -> target"
 
       - name: install frontend dependencies
         run: npm ci
@@ -50,7 +50,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: v__VERSION__
-          releaseName: 'onslicer v__VERSION__'
-          releaseBody: 'Automated build from main.'
+          releaseName: "onslicer v__VERSION__"
+          releaseBody: "Automated build from main."
           releaseDraft: false
           prerelease: false

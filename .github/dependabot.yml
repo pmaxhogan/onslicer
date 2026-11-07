@@ -1,15 +1,57 @@
+# stack-template: dependabot/multi-ecosystem@1 cd7ccce0a531
 version: 2
+
+# Mixed-ecosystem repos (npm + cargo + github-actions, the driven shape). A
+# top-level `multi-ecosystem-groups` entry owns the schedule and each `updates`
+# entry joins it through `multi-ecosystem-group`, so ONE weekly PR covers every
+# ecosystem instead of one grouped PR per ecosystem per directory (driven used to
+# get 4 PRs a week). `patterns` is required on every joining entry.
+#
+# Trade-off: `patterns: ["*"]` puts majors into the same weekly PR too. The cooldown
+# keeps fresh majors out for 14 days, and the auto-merge workflow never merges a
+# production major, so that PR waits for a human whenever it carries one. Narrow
+# `patterns` per entry if you want majors split out. Edit the directories to match
+# the repo; add one `updates` entry per extra manifest directory.
+#
+# Cooldown is per `updates` entry (D-DEP-3): majors 14 days, minors 3, patches 0.
+multi-ecosystem-groups:
+  weekly:
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/Chicago
+
 updates:
   - package-ecosystem: npm
-    directory: /
-    schedule:
-      interval: weekly
+    directory: "/"
+    multi-ecosystem-group: weekly
+    patterns:
+      - "*"
+    cooldown:
+      default-days: 3
+      semver-major-days: 14
+      semver-minor-days: 3
+      semver-patch-days: 0
+
   - package-ecosystem: cargo
-    directory: /src-tauri
-    schedule:
-      interval: weekly
+    directory: "C:/Program Files/Git/src-tauri"
+    multi-ecosystem-group: weekly
+    patterns:
+      - "*"
+    cooldown:
+      default-days: 3
+      semver-major-days: 14
+      semver-minor-days: 3
+      semver-patch-days: 0
+
   - package-ecosystem: github-actions
-    directory: /
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
+    directory: "/"
+    multi-ecosystem-group: weekly
+    patterns:
+      - "*"
+    cooldown:
+      default-days: 3
+      semver-major-days: 14
+      semver-minor-days: 3
+      semver-patch-days: 0

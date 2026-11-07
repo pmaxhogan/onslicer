@@ -1,0 +1,269 @@
+# stack-template: ci/node-ts@1 68deb8eb8ed7
+name: ci
+
+# Standard Node + TypeScript CI (stack standard ci.node-ts). One job, in the order a
+# failure is cheapest to read: typecheck, lint, format, ASCII, then tests with coverage.
+#   - runs on every PR and on every push to main (repos that ship by
+#     direct push would otherwise never be checked)
+#   - workflow_dispatch exists on purpose: a Dependabot merge made with GITHUB_TOKEN
+#     triggers no push workflows, so the auto-merge fallback dispatches this one
+#   - least privilege: read-only contents, nothing else
+# onslicer additions (recorded as a stack exception in CLAUDE.md):
+#   - `rust` job: the Tauri shell is Rust, so cargo/tauri bumps must compile before
+#     Dependabot's workflow-run auto-merge (which keys on this workflow) can merge them
+#   - `coverage` job: the coverage ratchet (coverage/compare-job logic) lives here, not
+#     in its own workflow, so a coverage drop also blocks that auto-merge
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same ref supersedes an older run. Never cancel a push run on the
+# default branch, which may be the one computing a coverage baseline.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # .node-version is the single source of truth for local dev and CI.
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: ESLint
+        run: npx eslint .
+
+      - name: Prettier
+        run: npx prettier --check .
+
+      # Em/en dashes and other non-ASCII punctuation break terminals and email clients.
+      - name: ASCII check
+        run: node scripts/check-ascii.mjs
+
+      # json-summary feeds the coverage compare job; cobertura feeds GitHub Code
+      # Quality's native coverage rule.
+      - name: Test with coverage
+        run: >-
+          npx vitest run --coverage
+          --coverage.reporter=text
+          --coverage.reporter=json-summary
+          --coverage.reporter=cobertura
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: coverage/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # Windows to match the release build (build.yml) and to skip the webkit2gtk system
+  # packages a Linux Tauri build needs. --locked fails when Cargo.lock is out of sync.
+  rust:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: rustfmt
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      # Links the crate (clippy only type-checks), so a bump that breaks the build fails here.
+      - name: Build and test
+        run: cargo test --locked
+
+  # Coverage ratchet (stack standard test.coverage-ratchet, compare-job mode): run the
+  # suite on the PR head and the base commit and fail when total line coverage drops
+  # more than MAX_DROP percentage points. No stored baseline; the base is recomputed.
+  coverage:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    env:
+      MAX_DROP: "0.5"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: head
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: head/.node-version
+          cache: npm
+          cache-dependency-path: head/package-lock.json
+
+      - name: Coverage on the PR head
+        working-directory: head
+        run: |
+          npm ci
+          npx vitest run --coverage --coverage.reporter=json-summary
+
+      # The base may predate the coverage setup; then the gate is informational.
+      - name: Coverage on the base commit
+        working-directory: base
+        continue-on-error: true
+        run: |
+          npm ci
+          npx vitest run --coverage --coverage.reporter=json-summary
+
+      - name: Compare total line coverage
+        run: |
+          node - <<'JS'
+          const fs = require("fs");
+          const read = (p) => {
+            try {
+              return JSON.parse(fs.readFileSync(p, "utf8")).total.lines.pct;
+            } catch {
+              return null;
+            }
+          };
+          const head = read("head/coverage/coverage-summary.json");
+          const base = read("base/coverage/coverage-summary.json");
+          const maxDrop = parseFloat(process.env.MAX_DROP);
+          if (head === null) {
+            console.log("::error::no coverage summary on the PR head (is the json-summary reporter enabled?)");
+            process.exit(1);
+          }
+          if (base === null) {
+            console.log(`::warning::no coverage summary on the base commit, gate is informational (head ${head}%)`);
+            process.exit(0);
+          }
+          const delta = head - base;
+          const line = `lines: base ${base.toFixed(2)}% -> head ${head.toFixed(2)}% (${delta >= 0 ? "+" : ""}${delta.toFixed(2)} pp, allowed drop ${maxDrop})`;
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `## Coverage\n\n${line}\n`);
+          console.log(line);
+          if (delta < -maxDrop) {
+            console.log(`::error::coverage dropped more than ${maxDrop} pp: ${line}`);
+            process.exit(1);
+          }
+          JS
+
+  # onslicer: most of the app is the Rust/Tauri side, which the JS checks above never
+  # compile. Windows matches the release build (build.yml) and needs no webkit2gtk
+  # system packages. Clippy compiles the whole crate, so a bad Rust or Tauri bump
+  # fails here before auto-merge can take it.
+  rust:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: rustfmt
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+  # onslicer: the coverage ratchet (test.coverage-ratchet, compare-job mode) lives in
+  # this workflow rather than a separate coverage.yml, because Dependabot auto-merge
+  # (workflow-run mode) fires on this workflow's completion only. A coverage drop of
+  # more than 0.5 pt turns ci red, so the bump is held for a human.
+  coverage:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    env:
+      MAX_DROP: "0.5"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: head
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: head/.node-version
+          cache: npm
+          cache-dependency-path: head/package-lock.json
+
+      - name: Coverage on the PR head
+        working-directory: head
+        run: |
+          npm ci
+          npx vitest run --coverage --coverage.reporter=json-summary
+
+      # The base may predate the coverage setup; then the gate is informational.
+      - name: Coverage on the base commit
+        working-directory: base
+        continue-on-error: true
+        run: |
+          npm ci
+          npx vitest run --coverage --coverage.reporter=json-summary
+
+      - name: Compare total line coverage
+        run: |
+          node - <<'JS'
+          const fs = require("fs");
+          const read = (p) => {
+            try {
+              return JSON.parse(fs.readFileSync(p, "utf8")).total.lines.pct;
+            } catch {
+              return null;
+            }
+          };
+          const head = read("head/coverage/coverage-summary.json");
+          const base = read("base/coverage/coverage-summary.json");
+          const maxDrop = parseFloat(process.env.MAX_DROP);
+          if (head === null) {
+            console.log("::error::no coverage summary on the PR head");
+            process.exit(1);
+          }
+          if (base === null) {
+            console.log(`::warning::no coverage summary on the base commit, gate is informational (head ${head}%)`);
+            process.exit(0);
+          }
+          const delta = head - base;
+          const line = `lines: base ${base.toFixed(2)}% -> head ${head.toFixed(2)}% (${delta >= 0 ? "+" : ""}${delta.toFixed(2)} pp, allowed drop ${maxDrop})`;
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `## Coverage\n\n${line}\n`);
+          console.log(line);
+          if (delta < -maxDrop) {
+            console.log(`::error::coverage dropped more than ${maxDrop} pp: ${line}`);
+            process.exit(1);
+          }
+          JS

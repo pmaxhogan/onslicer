@@ -1,7 +1,7 @@
 # onslicer
 
-Browse your [Onshape](https://www.onshape.com/) models and send them straight to 
-[Bambu Studio](https://bambulab.com/en/download/studio) — no export → save → import dance.
+Browse your [Onshape](https://www.onshape.com/) models and send them straight to
+[Bambu Studio](https://bambulab.com/en/download/studio) - no export -> save -> import dance.
 
 - Document grid with thumbnails, filterable
 - Print a whole part studio, a single part, or a composite part
@@ -14,7 +14,7 @@ Browse your [Onshape](https://www.onshape.com/) models and send them straight to
 1. Grab the latest installer from [Releases](https://github.com/pmaxhogan/onslicer/releases/latest).
 2. Create an API key in the [Onshape developer portal](https://cad.onshape.com/appstore/dev-portal)
    (read scopes are enough).
-3. Paste the access key + secret into the app's settings (⚙). Keys are stored locally
+3. Paste the access key + secret into the app's settings (&#x2699;). Keys are stored locally
    and only ever sent to onshape.com.
 
 ## TODO: use session from browser?

@@ -5,3 +5,4 @@ exports/
 .gstack/
 src-tauri/target/
 src-tauri/gen/
+coverage/
