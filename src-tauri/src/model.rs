@@ -1,6 +1,8 @@
 //! Data shapes shared by the disk caches, the Tauri commands and the frontend
 //! (src/types.ts), plus the pure helpers that decide paths and staleness.
 
+use std::collections::{BTreeMap, HashMap};
+
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 
@@ -148,6 +150,37 @@ pub struct SaveResult {
     /// Absolute path of the written file.
     pub file: String,
     pub bytes: usize,
+}
+
+/// cache/exported.json: per export target (see `export_key`), the tab's
+/// microversion when it was last saved or printed.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportRecords {
+    #[serde(default)]
+    pub items: BTreeMap<String, ExportRecord>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportRecord {
+    pub doc_id: String,
+    pub element_id: String,
+    /// None when it could not be determined; such a record is never stale.
+    #[serde(default)]
+    pub element_microversion: Option<String>,
+    pub exported_at: String,
+}
+
+/// invoke("check_exports"): the export targets whose tab changed in Onshape
+/// since their last save, plus the document list fetched to find out (None
+/// when nothing has been exported, which costs no API call).
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportCheck {
+    pub stale: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub docs: Option<DocsResult>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -317,6 +350,32 @@ fn ends_with_ci(s: &str, suffix: &str) -> bool {
     s.len() >= suffix.len()
         && s.is_char_boundary(s.len() - suffix.len())
         && s[s.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
+}
+
+/// `<docId>/<elementId>/<partId or empty>`; src/ui.ts `exportKey` builds the
+/// same string for the Save buttons.
+pub fn export_key(doc_id: &str, element_id: &str, part_id: Option<&str>) -> String {
+    format!("{doc_id}/{element_id}/{}", part_id.unwrap_or(""))
+}
+
+/// Keys of the records whose tab now has a different microversion. A tab that
+/// is gone, or whose current or recorded microversion is unknown, is not
+/// stale: there is nothing reliable to compare.
+pub fn stale_keys(
+    records: &ExportRecords,
+    current: &HashMap<(String, String), Option<String>>,
+) -> Vec<String> {
+    records
+        .items
+        .iter()
+        .filter(|(_, r)| {
+            let now = current
+                .get(&(r.doc_id.clone(), r.element_id.clone()))
+                .and_then(Option::as_deref);
+            matches!((now, r.element_microversion.as_deref()), (Some(a), Some(b)) if a != b)
+        })
+        .map(|(k, _)| k.clone())
+        .collect()
 }
 
 /// First `n` characters of a response body, for error messages.
@@ -491,6 +550,52 @@ mod tests {
                 "exports/My Doc/Bracket.stl/Arm_ left.stl".to_string()
             )
         );
+    }
+
+    fn record(el: &str, mv: Option<&str>) -> ExportRecord {
+        ExportRecord {
+            doc_id: "d".into(),
+            element_id: el.into(),
+            element_microversion: mv.map(Into::into),
+            exported_at: "t".into(),
+        }
+    }
+
+    #[test]
+    fn export_key_leaves_the_part_empty_for_a_whole_tab() {
+        assert_eq!(export_key("d", "e", None), "d/e/");
+        assert_eq!(export_key("d", "e", Some("JHD")), "d/e/JHD");
+    }
+
+    #[test]
+    fn stale_keys_flag_only_tabs_whose_microversion_moved() {
+        let mut records = ExportRecords::default();
+        records
+            .items
+            .insert("d/e1/".into(), record("e1", Some("a")));
+        records
+            .items
+            .insert("d/e1/P".into(), record("e1", Some("a")));
+        records
+            .items
+            .insert("d/e2/".into(), record("e2", Some("b")));
+        records.items.insert("d/e3/".into(), record("e3", None));
+        records
+            .items
+            .insert("d/gone/".into(), record("gone", Some("c")));
+        records
+            .items
+            .insert("d/e4/".into(), record("e4", Some("x")));
+        let current: HashMap<_, _> = [
+            ("e1", Some("a2")),
+            ("e2", Some("b")),
+            ("e3", Some("z")),
+            ("e4", None),
+        ]
+        .into_iter()
+        .map(|(e, mv)| (("d".to_string(), e.to_string()), mv.map(String::from)))
+        .collect();
+        assert_eq!(stale_keys(&records, &current), vec!["d/e1/", "d/e1/P"]);
     }
 
     #[test]

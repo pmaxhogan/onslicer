@@ -7,15 +7,18 @@
 //!   cache/thumbs/<docId>-<stamp>.png      document thumbnails
 //!   cache/thumbs/elements/<docId>-<elementId>-<stamp>.png        tab thumbnails
 //!   cache/thumbs/parts/<docId>-<elementId>-<partId>-<stamp>.png  part thumbnails
+//!   cache/exported.json                   tab microversion at each last export
 //!   exports/...                           exported models, see export_rel
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use reqwest::Response;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use tauri::async_runtime::Mutex as AsyncMutex;
 use tauri::{AppHandle, Manager};
 
 use crate::model::*;
@@ -547,11 +550,19 @@ async fn cached_thumb(
 // ---------- export ----------
 
 /// Exports from Onshape and writes to the stable path. Launches nothing.
+/// Records the tab's microversion for `check_exports`, read from a fresh
+/// element list (1 call) taken *before* the export: an edit made during the
+/// export then shows as a change instead of being hidden.
 pub async fn save(app: &AppHandle, target: &ExportTarget) -> Result<SaveResult, String> {
     let ExportTarget { doc, el, part } = target;
     check_id("document", &doc.id)?;
     check_id("element", &el.id)?;
     let ws = workspace(doc)?;
+    let microversion = get_elements(app, doc, Refresh::Normal)
+        .await
+        .ok()
+        .and_then(|r| r.data.items.into_iter().find(|e| e.id == el.id))
+        .map_or_else(|| el.microversion_id.clone(), |e| e.microversion_id);
     let (bytes, ext) = match el.element_type.as_str() {
         "PARTSTUDIO" => {
             let mut url = api_url(&format!(
@@ -598,8 +609,72 @@ pub async fn save(app: &AppHandle, target: &ExportTarget) -> Result<SaveResult, 
     );
     let path = data_path(app, &rel)?;
     write_file(&path, &bytes).await?;
+    let key = export_key(&doc.id, &el.id, part.as_ref().map(|p| p.part_id.as_str()));
+    let record = ExportRecord {
+        doc_id: doc.id.clone(),
+        element_id: el.id.clone(),
+        element_microversion: microversion,
+        exported_at: now_iso(),
+    };
+    update_records(app, |r| {
+        r.items.insert(key, record);
+    })
+    .await?;
     Ok(SaveResult {
         file: path.to_string_lossy().into_owned(),
         bytes: bytes.len(),
+    })
+}
+
+// ---------- change checks ----------
+
+/// Serializes read-modify-write of cache/exported.json between parallel saves.
+static RECORDS_LOCK: LazyLock<AsyncMutex<()>> = LazyLock::new(|| AsyncMutex::new(()));
+
+fn records_path(app: &AppHandle) -> Result<PathBuf, String> {
+    data_path(app, "cache/exported.json")
+}
+
+async fn update_records(app: &AppHandle, f: impl FnOnce(&mut ExportRecords)) -> Result<(), String> {
+    let _guard = RECORDS_LOCK.lock().await;
+    let path = records_path(app)?;
+    let mut records: ExportRecords = read_json(&path).await.unwrap_or_default();
+    f(&mut records);
+    write_json(&path, &records).await
+}
+
+/// Which exported targets changed in Onshape since their last save. Nothing
+/// exported: no API call. Otherwise the incremental document list (usually 1
+/// call), then each exported-from document's element list only when that
+/// document changed (`get_elements` refetches on a new modifiedAt).
+pub async fn check_exports(app: &AppHandle) -> Result<ExportCheck, String> {
+    let records: ExportRecords = read_json(&records_path(app)?).await.unwrap_or_default();
+    if records.items.is_empty() {
+        return Ok(ExportCheck {
+            stale: vec![],
+            docs: None,
+        });
+    }
+    let docs = get_docs(app, Refresh::Normal).await?;
+    let doc_ids: BTreeSet<&str> = records.items.values().map(|r| r.doc_id.as_str()).collect();
+    let mut current = HashMap::new();
+    for id in doc_ids {
+        let Some(doc) = docs.data.items.iter().find(|d| d.id == id) else {
+            continue;
+        };
+        // A failed refetch leaves the tabs of this doc unknown, not stale.
+        let Ok(els) = get_elements(app, doc, Refresh::None).await else {
+            continue;
+        };
+        if els.stale_error.is_some() {
+            continue;
+        }
+        for e in els.data.items {
+            current.insert((doc.id.clone(), e.id), e.microversion_id);
+        }
+    }
+    Ok(ExportCheck {
+        stale: stale_keys(&records, &current),
+        docs: Some(docs),
     })
 }

@@ -5,6 +5,7 @@ import {
   buildAuthInput,
   elementTypeLabel,
   esc,
+  exportKey,
   fileName,
   filterDocs,
   fmtDate,
@@ -164,5 +165,12 @@ describe("slicer helpers", () => {
   it("marks manual entries in the dropdown", () => {
     expect(slicerOptionLabel(bambu)).toBe("Bambu Studio");
     expect(slicerOptionLabel(mine)).toBe("my-slicer (added manually)");
+  });
+});
+
+describe("exportKey", () => {
+  it("matches the Rust export_key format", () => {
+    expect(exportKey("d", "e", null)).toBe("d/e/");
+    expect(exportKey("d", "e", "JHD")).toBe("d/e/JHD");
   });
 });

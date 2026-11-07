@@ -1,11 +1,14 @@
 import { getVersion } from "@tauri-apps/api/app";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
 import * as api from "./api";
+import { FocusPoller } from "./poll";
 import type {
   AuthMode,
   AuthSettings,
   Doc,
+  DocsResult,
   Element,
   Part,
   Refresh,
@@ -17,6 +20,7 @@ import {
   buildAuthInput,
   elementTypeLabel,
   esc,
+  exportKey,
   fileName,
   filterDocs,
   fmtDate,
@@ -101,15 +105,23 @@ async function updateMeta(): Promise<void> {
     "Authoritative count: cad.onshape.com/user/developer";
 }
 
+function showDocs(data: DocsResult): void {
+  docs = data.items;
+  // Keep the open dialog's doc current, so its next refresh compares against
+  // the latest modifiedAt.
+  const open = currentDoc;
+  if (open) currentDoc = docs.find((d) => d.id === open.id) ?? open;
+  const v = appVersion ? `v${appVersion} \u00b7 ` : "";
+  docsMeta = `${v}${plural(docs.length, "doc")} \u00b7 ${data.fromCache ? "cached" : "fresh"} ${fmtDate(data.fetchedAt)}`;
+  render();
+}
+
 async function loadDocs(refresh: Refresh = "none"): Promise<void> {
   const btn = $<HTMLButtonElement>("#refresh");
   btn.disabled = true;
   try {
     const data = await api.getDocs(refresh);
-    docs = data.items;
-    const v = appVersion ? `v${appVersion} \u00b7 ` : "";
-    docsMeta = `${v}${plural(docs.length, "doc")} \u00b7 ${data.fromCache ? "cached" : "fresh"} ${fmtDate(data.fetchedAt)}`;
-    render();
+    showDocs(data);
     if (refresh !== "none") toast(refreshSummary(data.changed, data.newCalls));
   } catch (e) {
     toast("Failed to load documents: " + errMsg(e), true, 6000);
@@ -134,9 +146,69 @@ function printTitle(): string {
     : "No slicer selected - open Settings";
 }
 
-function saveTitle(): string {
-  return `Re-export and overwrite the file in place (then use "Reload from disk" in ${slicerName(slicerState)})`;
+function saveTitle(stale = false): string {
+  const what = `Re-export and overwrite the file in place (then use "Reload from disk" in ${slicerName(slicerState)})`;
+  return stale ? `Changed in Onshape since you last saved or printed this. ${what}` : what;
 }
+
+// ---------- change checks ----------
+
+// Save buttons (keyed by exportKey) whose tab changed in Onshape since their
+// last save or print. Filled by the once-a-minute check while focused.
+let staleKeys = new Set<string>();
+
+function applyStale(): void {
+  for (const btn of document.querySelectorAll<HTMLButtonElement>("button.save")) {
+    const stale = staleKeys.has(btn.dataset.key ?? "");
+    btn.classList.toggle("stale", stale);
+    btn.title = saveTitle(stale);
+  }
+}
+
+function markSaved(key: string): void {
+  if (staleKeys.delete(key)) applyStale();
+}
+
+// Failures (offline, signed out, quota) toast once per streak, not every minute.
+let checkFailing = false;
+
+async function checkExports(): Promise<void> {
+  try {
+    const res = await api.checkExports();
+    checkFailing = false;
+    staleKeys = new Set(res.stale);
+    applyStale();
+    if (res.docs?.changed) showDocs(res.docs);
+  } catch (e) {
+    if (!checkFailing) toast("Checking for changes failed: " + errMsg(e), true, 6000);
+    checkFailing = true;
+  } finally {
+    updateMeta().catch(() => {});
+  }
+}
+
+const poller = new FocusPoller(checkExports, 60_000, document.hasFocus());
+
+// Native window focus; without it, the webview's own focus events.
+function watchFocus(): void {
+  const domFallback = () => {
+    window.addEventListener("focus", () => poller.setFocused(true));
+    window.addEventListener("blur", () => poller.setFocused(false));
+  };
+  let appWindow: ReturnType<typeof getCurrentWindow>;
+  try {
+    appWindow = getCurrentWindow();
+  } catch {
+    domFallback();
+    return;
+  }
+  appWindow.onFocusChanged(({ payload }) => poller.setFocused(payload)).catch(domFallback);
+  appWindow
+    .isFocused()
+    .then((f) => poller.setFocused(f))
+    .catch(() => {});
+}
+watchFocus();
 
 // Banner, Print buttons and the settings dropdown all follow the state.
 function applySlicerState(state: SlicerState): void {
@@ -147,9 +219,7 @@ function applySlicerState(state: SlicerState): void {
     btn.disabled = !canPrint();
     btn.title = printTitle();
   }
-  for (const btn of document.querySelectorAll<HTMLButtonElement>("button.save")) {
-    btn.title = saveTitle();
-  }
+  applyStale();
   renderSlicerSelect();
 }
 
@@ -484,14 +554,21 @@ function addActions(row: HTMLElement, el: Element, part: Part | null, label: str
   const doc = currentDoc;
   if (!doc) return;
   const target = { doc, el, part };
+  const key = exportKey(doc.id, el.id, part?.partId ?? null);
+  const saved = (r: SaveResult) => {
+    markSaved(key);
+    return r;
+  };
   const save = document.createElement("button");
   save.className = "save";
-  save.title = saveTitle();
+  save.dataset.key = key;
+  save.classList.toggle("stale", staleKeys.has(key));
+  save.title = saveTitle(staleKeys.has(key));
   save.innerHTML = SAVE_ICON;
   save.onclick = () =>
     void runAction(
       save,
-      () => api.saveExport(target),
+      () => api.saveExport(target).then(saved),
       (r) => `Saved ${fileName(r.file)} \u2713`,
       "Save failed",
       SAVE_ICON,
@@ -505,7 +582,7 @@ function addActions(row: HTMLElement, el: Element, part: Part | null, label: str
     const name = slicerName(slicerState);
     void runAction(
       print,
-      () => api.printExport(target),
+      () => api.printExport(target).then(saved),
       () => `Sent to ${name} \u2713`,
       "Print failed",
       esc(label),
@@ -606,6 +683,7 @@ async function saveSettings(): Promise<void> {
   $<HTMLDialogElement>("#settings").close();
   toast("Settings saved");
   void loadDocs(docs.length === 0 ? "normal" : "none");
+  poller.start();
 }
 
 // ---------- auto-update ----------
@@ -662,4 +740,5 @@ void (async () => {
     return;
   }
   await loadDocs();
+  poller.start();
 })();

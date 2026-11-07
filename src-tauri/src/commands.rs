@@ -82,6 +82,12 @@ pub async fn print_export(
     Ok(res)
 }
 
+/// Export targets whose tab changed in Onshape since their last save.
+#[tauri::command]
+pub async fn check_exports(app: AppHandle) -> Result<ExportCheck, String> {
+    data::check_exports(&app).await
+}
+
 #[tauri::command]
 pub fn get_call_stats(app: AppHandle, onshape: State<'_, Onshape>) -> CallStats {
     onshape.call_stats(&app)

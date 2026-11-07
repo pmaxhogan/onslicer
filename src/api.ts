@@ -9,6 +9,7 @@ import type {
   DocsResult,
   Element,
   ElementsResult,
+  ExportCheck,
   ExportTarget,
   Part,
   PartsCache,
@@ -35,6 +36,8 @@ export const saveExport = (target: ExportTarget) => invoke<SaveResult>("save_exp
 export const printExport = (target: ExportTarget) => invoke<SaveResult>("print_export", { target });
 
 export const getCallStats = () => invoke<CallStats>("get_call_stats");
+
+export const checkExports = () => invoke<ExportCheck>("check_exports");
 
 export const getAuthSettings = () => invoke<AuthSettings>("get_auth_settings");
 

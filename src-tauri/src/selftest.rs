@@ -9,7 +9,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
 use crate::data;
-use crate::model::{Element, ExportTarget, Refresh};
+use crate::model::{export_key, Element, ExportTarget, Refresh};
 use crate::onshape::Onshape;
 use crate::settings;
 
@@ -178,6 +178,7 @@ async fn steps(app: &AppHandle, out: &mut Vec<Step>) -> Result<(), String> {
         .find(|p| p.body_type == "solid")
         .or(parts.data.items.first())
         .cloned();
+    let key = export_key(&doc.id, &ps.id, solid.as_ref().map(|p| p.part_id.as_str()));
     let res = data::save(
         app,
         &ExportTarget {
@@ -191,6 +192,16 @@ async fn steps(app: &AppHandle, out: &mut Vec<Step>) -> Result<(), String> {
         "export",
         res.bytes > 100,
         format!("{} bytes -> {}", res.bytes, res.file),
+    );
+    // Nothing changed since that export, so its Save button must not be yellow.
+    let check = data::check_exports(app).await?;
+    step(
+        "change-check",
+        check.docs.is_some() && !check.stale.contains(&key),
+        format!(
+            "{} stale target(s), just-exported {key} fresh",
+            check.stale.len()
+        ),
     );
 
     // Cache invalidation: a plain elements refresh keeps the parts cache of an

@@ -41,6 +41,11 @@ export function refreshSummary(changed: number | undefined, newCalls: number): s
   return `${what} \u00b7 ${plural(newCalls, "API call")}`;
 }
 
+// Identifies one Save button's target; matches model.rs export_key.
+export function exportKey(docId: string, elementId: string, partId: string | null): string {
+  return `${docId}/${elementId}/${partId ?? ""}`;
+}
+
 // The last segment of a Windows or POSIX path.
 export function fileName(path: string): string {
   return path.split(/[\\/]/).pop() ?? path;

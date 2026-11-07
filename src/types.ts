@@ -76,6 +76,14 @@ export interface SaveResult {
   bytes: number;
 }
 
+// invoke("check_exports"): keys (see ui.ts exportKey) of exported targets
+// whose tab changed in Onshape since their last save; `docs` is the document
+// list fetched to find out, absent when nothing has been exported.
+export interface ExportCheck {
+  stale: string[];
+  docs?: DocsResult;
+}
+
 // invoke("get_call_stats")
 export interface CallStats {
   session: number;

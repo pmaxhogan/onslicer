@@ -30,6 +30,7 @@ pub fn run() {
             commands::save_export,
             commands::print_export,
             commands::get_call_stats,
+            commands::check_exports,
             auth::get_auth_settings,
             auth::save_auth_settings,
             slicers::list_slicers,
