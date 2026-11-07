@@ -45,6 +45,9 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit
 
+      - name: Build frontend
+        run: npm run build:web
+
       - name: ESLint
         run: npx eslint .
 
@@ -82,6 +85,21 @@ jobs:
         working-directory: src-tauri
     steps:
       - uses: actions/checkout@v7
+
+      # tauri::generate_context! embeds build.frontendDist (../dist), so the
+      # frontend has to be built before anything compiles the crate.
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Install frontend dependencies
+        working-directory: .
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: .
+        run: npm run build:web
 
       - uses: dtolnay/rust-toolchain@stable
         with:

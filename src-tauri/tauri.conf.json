@@ -4,12 +4,17 @@
   "version": "0.1.0",
   "identifier": "com.pmaxhogan.onslicer",
   "build": {
-    "frontendDist": "../src"
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev:web",
+    "beforeBuildCommand": "npm run build:web"
   },
   "app": {
-    "withGlobalTauri": true,
+    "withGlobalTauri": false,
     "windows": [
       {
+        "label": "main",
+        "create": false,
         "title": "onslicer",
         "width": 1240,
         "height": 840,

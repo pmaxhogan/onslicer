@@ -291,7 +291,9 @@
         font-size: 13px;
         color: var(--muted);
       }
-      #settings input {
+      #settings input,
+      #settings select,
+      #settings textarea {
         background: var(--panel-2);
         border: 1px solid var(--border);
         color: var(--text);
@@ -299,6 +301,58 @@
         padding: 7px 11px;
         font: inherit;
         font-size: 13.5px;
+      }
+      #settings textarea {
+        resize: vertical;
+      }
+      #settings h3 {
+        font-size: 14px;
+        font-weight: 600;
+        margin: 4px 0 0;
+        color: var(--text);
+      }
+      #settings h3 ~ h3 {
+        border-top: 1px solid var(--border);
+        padding-top: 14px;
+        margin-top: 6px;
+      }
+      #settings .mode-fields {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      #settings .row {
+        display: flex;
+        gap: 8px;
+      }
+      #settings .row select {
+        flex: 1;
+        min-width: 0;
+      }
+      #settings .path {
+        word-break: break-all;
+      }
+      #settings .error {
+        color: #e74c3c;
+        font-size: 13px;
+      }
+      #slicer-banner {
+        max-width: 1400px;
+        margin: 14px auto 0;
+        padding: 0 22px;
+      }
+      #slicer-banner .inner {
+        background: var(--panel);
+        border: 1px solid #c0392b;
+        border-radius: 9px;
+        padding: 10px 14px;
+        font-size: 13.5px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      #slicer-banner .inner span {
+        flex: 1;
       }
       #settings .hint {
         font-size: 12px;
@@ -365,6 +419,16 @@
       <div id="meta"></div>
     </header>
 
+    <div id="slicer-banner" hidden>
+      <div class="inner">
+        <span
+          ><b>No slicer found.</b> Install one (Bambu Studio, OrcaSlicer, PrusaSlicer, ...) and
+          rescan, or pick its executable with Other... in Settings. Saving still works.</span
+        >
+        <button id="slicer-banner-settings" class="primary">Open settings</button>
+      </div>
+    </div>
+
     <div id="update-banner">
       <div class="inner">
         <span id="update-text">Update installed.</span>
@@ -414,34 +478,88 @@
         <button id="settings-close">&#x2715;</button>
       </div>
       <div class="dlg-body">
-        <div class="hint">
-          Create an API key in the
-          <a href="https://cad.onshape.com/appstore/dev-portal" target="_blank" rel="noreferrer"
-            >Onshape developer portal</a
-          >. Keys are stored locally on this machine and only ever sent to onshape.com.
+        <h3>Onshape sign-in</h3>
+        <label
+          >Sign in with
+          <select id="set-mode">
+            <option value="apiKey">API keys</option>
+            <option value="password">Email + password</option>
+            <option value="session">Browser session</option>
+          </select>
+        </label>
+        <div class="mode-fields" data-mode="apiKey">
+          <div class="hint">
+            Create an API key in the
+            <a href="https://cad.onshape.com/appstore/dev-portal" target="_blank" rel="noreferrer"
+              >Onshape developer portal</a
+            >.
+          </div>
+          <label
+            >Access key
+            <input
+              id="set-access"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="on_&hellip;"
+            />
+          </label>
+          <label
+            >Secret key
+            <input id="set-secret" type="password" autocomplete="off" placeholder="secret" />
+          </label>
         </div>
-        <label
-          >Onshape access key
-          <input id="set-access" autocomplete="off" spellcheck="false" placeholder="on_&hellip;" />
-        </label>
-        <label
-          >Onshape secret key
-          <input id="set-secret" type="password" autocomplete="off" placeholder="secret" />
-        </label>
-        <label
-          >Slicer executable
-          <input
-            id="set-bambu"
-            autocomplete="off"
-            spellcheck="false"
-            placeholder="C:\Program Files\Bambu Studio\bambu-studio.exe"
-          />
-        </label>
+        <div class="mode-fields" data-mode="password">
+          <label
+            >Email
+            <input id="set-username" type="email" autocomplete="off" spellcheck="false" />
+          </label>
+          <label
+            >Password
+            <input id="set-password" type="password" autocomplete="off" placeholder="password" />
+          </label>
+        </div>
+        <div class="mode-fields" data-mode="session">
+          <div class="hint">
+            Paste the Cookie header of a request to cad.onshape.com from your browser's developer
+            tools while signed in.
+          </div>
+          <label
+            >Session cookie
+            <textarea
+              id="set-session"
+              rows="3"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="cookie"
+            ></textarea>
+          </label>
+        </div>
+        <div class="hint">
+          Secrets are stored in the Windows Credential Manager and only ever sent to onshape.com.
+        </div>
+        <div id="set-error" class="error" hidden></div>
         <div><button id="settings-save" class="primary">Save</button></div>
+
+        <h3>Slicer</h3>
+        <label
+          >Open prints in
+          <span class="row">
+            <select id="set-slicer"></select>
+            <button
+              id="slicer-rescan"
+              title="Scan the install locations of common slicers again"
+              aria-label="Rescan for slicers"
+            >
+              &#x27F3;
+            </button>
+          </span>
+        </label>
+        <div id="slicer-path" class="hint path"></div>
+        <div id="slicer-error" class="error" hidden></div>
       </div>
     </dialog>
 
     <div id="toast"></div>
-    <script type="module" src="main.js"></script>
+    <script type="module" src="./main.ts"></script>
   </body>
 </html>

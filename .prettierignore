@@ -7,3 +7,4 @@ src-tauri/Cargo.lock
 cache/
 exports/
 .gstack/
+dist/
