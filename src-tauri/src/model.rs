@@ -1,7 +1,7 @@
 //! Data shapes shared by the disk caches, the Tauri commands and the frontend
 //! (src/types.ts), plus the pure helpers that decide paths and staleness.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
@@ -166,9 +166,13 @@ pub struct ExportRecords {
 pub struct ExportRecord {
     pub doc_id: String,
     pub element_id: String,
-    /// None when it could not be determined; such a record is never stale.
+    /// The tab's `tab_signature` at the export. None when it could not be
+    /// determined; such a record is never stale.
     #[serde(default)]
     pub element_microversion: Option<String>,
+    /// Same-document tabs an assembly references; empty for other tabs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deps: Vec<String>,
     pub exported_at: String,
 }
 
@@ -238,6 +242,17 @@ pub fn is_stale_3mf_blob(el: &Element) -> bool {
         && (el.data_type.as_deref() == Some("application/3mf") || ends_with_ci(&el.name, ".3mf"))
 }
 
+/// An element list as shown: stale 3MF blobs dropped, and `printable`
+/// recomputed, since a list cached by an older version may predate a newly
+/// printable element type (assemblies).
+pub fn visible(mut data: ElementsCache) -> ElementsCache {
+    data.items.retain(|e| !is_stale_3mf_blob(e));
+    for e in &mut data.items {
+        e.printable = is_printable(&e.element_type, e.data_type.as_deref(), &e.name);
+    }
+    data
+}
+
 /// File extension of a blob whose data type marks it printable.
 fn printable_blob_ext(data_type: Option<&str>) -> Option<&'static str> {
     match data_type {
@@ -248,6 +263,7 @@ fn printable_blob_ext(data_type: Option<&str>) -> Option<&'static str> {
 
 pub fn is_printable(element_type: &str, data_type: Option<&str>, name: &str) -> bool {
     element_type == "PARTSTUDIO"
+        || element_type == "ASSEMBLY"
         || (element_type == "BLOB"
             && (printable_blob_ext(data_type).is_some() || ends_with_ci(name, ".stl")))
 }
@@ -358,9 +374,36 @@ pub fn export_key(doc_id: &str, element_id: &str, part_id: Option<&str>) -> Stri
     format!("{doc_id}/{element_id}/{}", part_id.unwrap_or(""))
 }
 
-/// Keys of the records whose tab now has a different microversion. A tab that
-/// is gone, or whose current or recorded microversion is unknown, is not
-/// stale: there is nothing reliable to compare.
+/// What an export record compares: the tab's microversion, followed for an
+/// assembly by `|<tab>=<microversion>` for each same-document tab it
+/// references (sorted), since editing a referenced part studio need not move
+/// the assembly's own microversion. None when any of them is unknown.
+pub fn tab_signature(
+    doc_id: &str,
+    element_id: &str,
+    deps: &[String],
+    current: &HashMap<(String, String), Option<String>>,
+) -> Option<String> {
+    let mv = |el: &str| {
+        current
+            .get(&(doc_id.to_string(), el.to_string()))
+            .cloned()
+            .flatten()
+    };
+    let mut sig = mv(element_id)?;
+    let mut deps: Vec<&String> = deps.iter().collect();
+    deps.sort();
+    deps.dedup();
+    for dep in deps {
+        sig.push_str(&format!("|{dep}={}", mv(dep)?));
+    }
+    Some(sig)
+}
+
+/// Keys of the records whose tab (or, for an assembly, a tab it references)
+/// now has a different microversion. A tab that is gone, or whose current or
+/// recorded microversion is unknown, is not stale: there is nothing reliable
+/// to compare.
 pub fn stale_keys(
     records: &ExportRecords,
     current: &HashMap<(String, String), Option<String>>,
@@ -369,13 +412,106 @@ pub fn stale_keys(
         .items
         .iter()
         .filter(|(_, r)| {
-            let now = current
-                .get(&(r.doc_id.clone(), r.element_id.clone()))
-                .and_then(Option::as_deref);
+            let now = tab_signature(&r.doc_id, &r.element_id, &r.deps, current);
             matches!((now, r.element_microversion.as_deref()), (Some(a), Some(b)) if a != b)
         })
         .map(|(k, _)| k.clone())
         .collect()
+}
+
+/// The parts of an assembly definition (`GET /assemblies/...`) that matter
+/// for an export: is there anything in it, and which tabs of its own
+/// document it pulls parts or sub-assemblies from.
+#[derive(Deserialize, Debug, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AssemblyDef {
+    pub root_assembly: SubAssembly,
+    pub sub_assemblies: Vec<SubAssembly>,
+}
+
+#[derive(Deserialize, Debug, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SubAssembly {
+    pub instances: Vec<AsmInstance>,
+}
+
+#[derive(Deserialize, Debug, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AsmInstance {
+    pub document_id: String,
+    pub element_id: String,
+}
+
+impl AssemblyDef {
+    /// Tabs of `doc_id` other than `self_id` that the assembly references,
+    /// sorted and deduplicated. References into other documents point at
+    /// versions, which never change.
+    pub fn same_doc_deps(&self, doc_id: &str, self_id: &str) -> Vec<String> {
+        let set: BTreeSet<String> = std::iter::once(&self.root_assembly)
+            .chain(&self.sub_assemblies)
+            .flat_map(|a| &a.instances)
+            .filter(|i| {
+                i.document_id == doc_id && !i.element_id.is_empty() && i.element_id != self_id
+            })
+            .map(|i| i.element_id.clone())
+            .collect();
+        set.into_iter().collect()
+    }
+}
+
+/// Rescales a binary STL to millimeters, in place. Onshape's assembly STL
+/// translation ignores the requested unit and writes meters, saying so in the
+/// header ("... Units = meters"); slicers read STL as millimeters. A header
+/// without a unit is left alone.
+pub fn stl_to_mm(bytes: &mut [u8]) -> Result<(), String> {
+    let n = match bytes.get(80..84) {
+        Some(b) => u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize,
+        None => return Err("export is not a binary STL".into()),
+    };
+    if bytes.len() != 84 + 50 * n {
+        return Err("export is not a single binary STL".into());
+    }
+    let header = String::from_utf8_lossy(&bytes[..80]).to_ascii_lowercase();
+    let Some(unit) = header.split("units =").nth(1) else {
+        return Ok(());
+    };
+    let unit = unit.trim_matches(|c: char| c.is_whitespace() || c == '\0');
+    let unit = unit
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .next()
+        .unwrap_or("");
+    let scale: f32 = match unit {
+        "meter" | "meters" | "m" => 1000.0,
+        "centimeter" | "centimeters" | "cm" => 10.0,
+        "millimeter" | "millimeters" | "mm" => return Ok(()),
+        "inch" | "inches" | "in" => 25.4,
+        "foot" | "feet" | "ft" => 304.8,
+        other => return Err(format!("export has an unknown unit ({other})")),
+    };
+    for t in 0..n {
+        // Each triangle: normal (3 floats, unchanged), 3 vertices, attribute.
+        for k in 0..9 {
+            let o = 84 + 50 * t + 12 + 4 * k;
+            let v = f32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]);
+            bytes[o..o + 4].copy_from_slice(&(v * scale).to_le_bytes());
+        }
+    }
+    let mut h = [0u8; 80];
+    let text = b"STL generated by ONSHAPE, rescaled by onslicer. Units = millimeters";
+    h[..text.len()].copy_from_slice(text);
+    bytes[..80].copy_from_slice(&h);
+    Ok(())
+}
+
+/// `GET /translations/{id}`, and the response to starting one.
+#[derive(Deserialize, Debug, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Translation {
+    pub id: String,
+    /// ACTIVE, DONE or FAILED.
+    pub request_state: String,
+    pub failure_reason: Option<String>,
+    pub result_external_data_ids: Option<Vec<String>>,
 }
 
 /// First `n` characters of a response body, for error messages.
@@ -448,12 +584,30 @@ mod tests {
     }
 
     #[test]
+    fn visible_recomputes_printable_and_hides_3mf_blobs() {
+        let mut c = cache(None);
+        c.items = vec![
+            el("ASSEMBLY", None, "Asm"),
+            el("BLOB", Some("application/3mf"), "Plate.3mf"),
+            el("VARIABLESTUDIO", None, "vars"),
+        ];
+        let v = visible(c);
+        let got: Vec<_> = v
+            .items
+            .iter()
+            .map(|e| (e.name.as_str(), e.printable))
+            .collect();
+        assert_eq!(got, vec![("Asm", true), ("vars", false)]);
+    }
+
+    #[test]
     fn printable_and_blob_ext() {
         assert!(is_printable("PARTSTUDIO", None, "x"));
         assert!(is_printable("BLOB", Some("application/sla"), "x"));
         assert!(is_printable("BLOB", None, "Bracket.STL"));
         assert!(!is_printable("BLOB", None, "notes.txt"));
-        assert!(!is_printable("ASSEMBLY", None, "x.stl"));
+        assert!(is_printable("ASSEMBLY", None, "x"));
+        assert!(!is_printable("DRAWING", None, "x.stl"));
         assert_eq!(blob_ext(Some("model/stl"), "x.3mf"), ".stl");
         assert_eq!(blob_ext(None, "Plate.3MF"), ".3mf");
         assert_eq!(blob_ext(None, "thing"), ".stl");
@@ -557,8 +711,157 @@ mod tests {
             doc_id: "d".into(),
             element_id: el.into(),
             element_microversion: mv.map(Into::into),
+            deps: vec![],
             exported_at: "t".into(),
         }
+    }
+
+    fn mvs(pairs: &[(&str, Option<&str>)]) -> HashMap<(String, String), Option<String>> {
+        pairs
+            .iter()
+            .map(|(e, mv)| (("d".to_string(), e.to_string()), mv.map(String::from)))
+            .collect()
+    }
+
+    #[test]
+    fn tab_signature_is_the_microversion_plus_sorted_deps() {
+        let cur = mvs(&[
+            ("a", Some("1")),
+            ("s1", Some("x")),
+            ("s2", Some("y")),
+            ("u", None),
+        ]);
+        assert_eq!(tab_signature("d", "a", &[], &cur).as_deref(), Some("1"));
+        let deps = vec!["s2".to_string(), "s1".to_string(), "s2".to_string()];
+        assert_eq!(
+            tab_signature("d", "a", &deps, &cur).as_deref(),
+            Some("1|s1=x|s2=y")
+        );
+        assert_eq!(tab_signature("d", "a", &["u".to_string()], &cur), None);
+        assert_eq!(tab_signature("d", "a", &["gone".to_string()], &cur), None);
+        assert_eq!(tab_signature("d", "u", &[], &cur), None);
+        assert_eq!(tab_signature("other", "a", &[], &cur), None);
+    }
+
+    #[test]
+    fn an_assembly_goes_stale_when_a_referenced_tab_changes() {
+        let mut records = ExportRecords::default();
+        let mut asm = record("asm", Some("1|ps=x"));
+        asm.deps = vec!["ps".into()];
+        records.items.insert("d/asm/".into(), asm);
+        let same = mvs(&[("asm", Some("1")), ("ps", Some("x"))]);
+        assert!(stale_keys(&records, &same).is_empty());
+        let moved = mvs(&[("asm", Some("1")), ("ps", Some("x2"))]);
+        assert_eq!(stale_keys(&records, &moved), vec!["d/asm/"]);
+        let gone = mvs(&[("asm", Some("1"))]);
+        assert!(stale_keys(&records, &gone).is_empty());
+    }
+
+    #[test]
+    fn records_without_deps_keep_their_old_shape() {
+        let r: ExportRecord = serde_json::from_str(
+            r#"{"docId":"d","elementId":"e","elementMicroversion":"m","exportedAt":"t"}"#,
+        )
+        .unwrap();
+        assert!(r.deps.is_empty());
+        let v = serde_json::to_value(&r).unwrap();
+        assert!(v.get("deps").is_none());
+    }
+
+    #[test]
+    fn assembly_def_lists_same_doc_tabs_once() {
+        let def: AssemblyDef = serde_json::from_str(
+            r#"{
+              "rootAssembly": {"instances": [
+                {"documentId": "d", "elementId": "ps1", "type": "Part"},
+                {"documentId": "d", "elementId": "ps1", "type": "Part"},
+                {"documentId": "other", "elementId": "ext", "type": "Part"},
+                {"documentId": "d", "elementId": "sub", "type": "Assembly"}
+              ]},
+              "subAssemblies": [{"instances": [
+                {"documentId": "d", "elementId": "ps2"},
+                {"documentId": "d", "elementId": "asm"}
+              ]}]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(def.same_doc_deps("d", "asm"), vec!["ps1", "ps2", "sub"]);
+        let empty: AssemblyDef = serde_json::from_str("{}").unwrap();
+        assert!(empty.root_assembly.instances.is_empty());
+    }
+
+    fn stl(header: &str, verts: &[f32]) -> Vec<u8> {
+        let mut b = vec![0u8; 80];
+        b[..header.len()].copy_from_slice(header.as_bytes());
+        let n = verts.len() / 9;
+        b.extend_from_slice(&(n as u32).to_le_bytes());
+        for tri in verts.chunks(9) {
+            b.extend_from_slice(&[0u8; 12]);
+            for v in tri {
+                b.extend_from_slice(&v.to_le_bytes());
+            }
+            b.extend_from_slice(&[0u8; 2]);
+        }
+        b
+    }
+
+    fn verts(b: &[u8]) -> Vec<f32> {
+        (0..9)
+            .map(|k| f32::from_le_bytes(b[96 + 4 * k..100 + 4 * k].try_into().unwrap()))
+            .collect()
+    }
+
+    #[test]
+    fn stl_to_mm_scales_meters_and_rewrites_the_header() {
+        let v = [0.0, 0.0, 0.0, 0.065, 0.0, 0.0, 0.0, 0.11, 0.001];
+        let mut b = stl(
+            "root\0 STL generated by ONSHAPE BY PTC INC, 1.223. Units = meters",
+            &v,
+        );
+        stl_to_mm(&mut b).unwrap();
+        let got = verts(&b);
+        for (g, want) in got
+            .iter()
+            .zip([0.0, 0.0, 0.0, 65.0, 0.0, 0.0, 0.0, 110.0, 1.0])
+        {
+            assert!((g - want).abs() < 1e-3, "{got:?}");
+        }
+        assert!(String::from_utf8_lossy(&b[..80]).contains("Units = millimeters"));
+        // Already millimeters now: a second pass changes nothing.
+        let again = b.clone();
+        stl_to_mm(&mut b).unwrap();
+        assert_eq!(b, again);
+    }
+
+    #[test]
+    fn stl_to_mm_handles_other_units_and_bad_input() {
+        let mut b = stl("Units = inches", &[1.0; 9]);
+        stl_to_mm(&mut b).unwrap();
+        assert!((verts(&b)[0] - 25.4).abs() < 1e-4);
+        let mut b = stl("no unit here", &[2.0; 9]);
+        stl_to_mm(&mut b).unwrap();
+        assert_eq!(verts(&b)[0], 2.0);
+        assert!(stl_to_mm(&mut stl("Units = parsecs", &[1.0; 9])).is_err());
+        assert!(stl_to_mm(&mut b"PK\x03\x04 zip".to_vec()).is_err());
+        let mut short = stl("Units = meters", &[1.0; 9]);
+        short.pop();
+        assert!(stl_to_mm(&mut short).is_err());
+    }
+
+    #[test]
+    fn translation_parses_the_api_shape() {
+        let t: Translation = serde_json::from_str(
+            r#"{"id":"t1","requestState":"FAILED","failureReason":"no geometry","resultExternalDataIds":null}"#,
+        )
+        .unwrap();
+        assert_eq!(t.request_state, "FAILED");
+        assert_eq!(t.failure_reason.as_deref(), Some("no geometry"));
+        assert!(t.result_external_data_ids.is_none());
+        let t: Translation = serde_json::from_str(
+            r#"{"id":"t1","requestState":"DONE","resultExternalDataIds":["f"]}"#,
+        )
+        .unwrap();
+        assert_eq!(t.result_external_data_ids, Some(vec!["f".to_string()]));
     }
 
     #[test]

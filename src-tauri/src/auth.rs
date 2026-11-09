@@ -138,6 +138,29 @@ impl Auth {
         }
     }
 
+    /// Onshape rotates the `on` session cookie on each response. GETs still
+    /// take an older value but POSTs answer 401 to it, so a cookie session
+    /// keeps the rotated values. Only in memory: the stored session still
+    /// works for GETs, and the first response of a run rotates it again.
+    /// Call only with successful responses (an error may set a fresh,
+    /// signed-out session). A no-op with API keys, where no session is
+    /// loaded.
+    pub(crate) fn note_response_cookies(&self, headers: &HeaderMap) {
+        let updates = session_cookies(headers);
+        if updates.is_empty() {
+            return;
+        }
+        let Ok(mut cache) = self.secrets.lock() else {
+            return;
+        };
+        if let Some(Some(current)) = cache.get(SESSION) {
+            let merged = merge_cookies(current, &updates);
+            if merged != *current {
+                cache.insert(SESSION, Some(merged));
+            }
+        }
+    }
+
     /// Called once when an onshape.com response came back 401 or 403.
     /// `Ok(true)`: credentials were refreshed (for example a fresh password
     /// login), so the caller retries the request once. `Ok(false)`: nothing to
@@ -396,6 +419,27 @@ fn cookie_headers(session: &str) -> Result<HeaderMap, String> {
     Ok(headers)
 }
 
+/// `current` with each `name=value` of `updates` replacing the cookie of
+/// that name, or appended when there is none.
+fn merge_cookies(current: &str, updates: &str) -> String {
+    let mut pairs: Vec<(String, String)> = current
+        .split(';')
+        .filter_map(|p| p.trim().split_once('='))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    for (k, v) in updates.split(';').filter_map(|p| p.trim().split_once('=')) {
+        match pairs.iter_mut().find(|(name, _)| name == k) {
+            Some(pair) => pair.1 = v.to_string(),
+            None => pairs.push((k.to_string(), v.to_string())),
+        }
+    }
+    pairs
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 fn cookie_value<'a>(cookies: &'a str, name: &str) -> Option<&'a str> {
     cookies
         .split(';')
@@ -463,6 +507,16 @@ mod tests {
         assert_eq!(h.get(COOKIE).unwrap(), "a=1; XSRF-TOKEN=t");
         assert_eq!(h.get("X-XSRF-TOKEN").unwrap(), "t");
         assert!(cookie_headers("a=1").unwrap().get("X-XSRF-TOKEN").is_none());
+    }
+
+    #[test]
+    fn merge_cookies_replaces_by_name_and_appends_new_ones() {
+        assert_eq!(
+            merge_cookies("on=old; XSRF-TOKEN=t; _u=u", "on=new; extra=1"),
+            "on=new; XSRF-TOKEN=t; _u=u; extra=1"
+        );
+        assert_eq!(merge_cookies("a=1", ""), "a=1");
+        assert_eq!(merge_cookies("a=x=y", "a=b=c"), "a=b=c");
     }
 
     #[test]

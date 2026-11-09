@@ -5,7 +5,8 @@ Browse your [Onshape](https://www.onshape.com/) models and send them straight to
 automatically) - no export -> save -> import dance.
 
 - Document grid with thumbnails, filterable; each document opens as a gallery of its tabs and parts
-- Print a whole part studio, a single part, or a composite part
+- Print a whole part studio, a single part, a composite part, or a whole assembly (exported
+  as one STL in its assembled positions; that takes a few seconds and a few more API calls)
 - STL is exported live from Onshape on every print, so geometry is never stale
 - Aggressive on-disk caching to minimize latency and avoid waiting on network round-trips
 - Auto-updates from GitHub releases

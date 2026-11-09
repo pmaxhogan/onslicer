@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use reqwest::header::{ACCEPT, LOCATION};
-use reqwest::{redirect, Response, StatusCode, Url};
+use reqwest::{redirect, Method, Response, StatusCode, Url};
 use tauri::{AppHandle, Manager};
 
 use crate::auth::Auth;
@@ -34,6 +34,12 @@ pub fn api_url(path: &str) -> Result<Url, String> {
     Url::parse(BASE)
         .and_then(|base| base.join(path))
         .map_err(|e| format!("bad Onshape URL {path}: {e}"))
+}
+
+/// AWS WAF in front of Onshape answers a request it wants a browser
+/// challenge for with an empty 202 and this header.
+fn is_waf_challenge(res: &Response) -> bool {
+    res.status() == StatusCode::ACCEPTED && res.headers().contains_key("x-amzn-waf-action")
 }
 
 /// Auth is only ever sent to Onshape itself over https.
@@ -78,13 +84,42 @@ impl Onshape {
     /// On a 401/403 from Onshape, auth gets one chance to refresh its
     /// credentials, after which the request starts over once.
     pub async fn get(&self, app: &AppHandle, start: Url, accept: &str) -> Result<Response, String> {
+        self.send(app, Method::GET, start, accept, None).await
+    }
+
+    /// POST a JSON body, with the same auth handling as [`Onshape::get`]. A
+    /// redirect is returned as is rather than followed.
+    pub(crate) async fn post_json(
+        &self,
+        app: &AppHandle,
+        url: Url,
+        body: &serde_json::Value,
+    ) -> Result<Response, String> {
+        self.send(app, Method::POST, url, JSON_ACCEPT, Some(body))
+            .await
+    }
+
+    async fn send(
+        &self,
+        app: &AppHandle,
+        method: Method,
+        start: Url,
+        accept: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<Response, String> {
         let auth = app.state::<Auth>();
         let mut url = start.clone();
         let mut hops = 0;
         let mut retried = false;
         while hops < MAX_HOPS {
             let onshape = is_onshape(&url);
-            let mut req = self.client.get(url.clone()).header(ACCEPT, accept);
+            let mut req = self
+                .client
+                .request(method.clone(), url.clone())
+                .header(ACCEPT, accept);
+            if let Some(body) = body {
+                req = req.json(body);
+            }
             if onshape {
                 req = req.headers(auth.headers_for(app, &url).await?);
             }
@@ -93,8 +128,16 @@ impl Onshape {
                 .await
                 .map_err(|e| format!("request failed: {}", error_chain(&e)))?;
             let status = res.status();
+            if is_waf_challenge(&res) {
+                return Err(
+                    "Onshape's firewall held the request back (too many in a short time?) - \
+                     try again in a few minutes"
+                        .into(),
+                );
+            }
             if onshape && status.as_u16() < 400 {
                 self.count_call(app);
+                auth.note_response_cookies(res.headers());
             }
             if onshape
                 && !retried
@@ -107,7 +150,7 @@ impl Onshape {
                     continue;
                 }
             }
-            if status.is_redirection() {
+            if status.is_redirection() && method == Method::GET {
                 let loc = res
                     .headers()
                     .get(LOCATION)

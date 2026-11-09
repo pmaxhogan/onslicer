@@ -258,5 +258,90 @@ async fn steps(app: &AppHandle, out: &mut Vec<Step>) -> Result<(), String> {
             "no blob element available to test (skipped)".into(),
         ),
     }
+
+    // Assembly export (translation: start, poll, download). Candidates come
+    // from cached element lists, test document first; an empty assembly fails
+    // after 1 call, so try a few.
+    let mut candidates = vec![];
+    for d in std::iter::once(&doc).chain(docs.data.items.iter().filter(|d| d.id != doc.id)) {
+        if let Some(els) = data::raw_elements(app, &d.id).await? {
+            for e in els
+                .items
+                .into_iter()
+                .filter(|e| e.element_type == "ASSEMBLY")
+            {
+                candidates.push((d.clone(), e));
+            }
+        }
+        if candidates.len() >= 3 {
+            break;
+        }
+    }
+    let mut tried = vec![];
+    let mut done = None;
+    for (d, el) in candidates.into_iter().take(3) {
+        let key = export_key(&d.id, &el.id, None);
+        let label = format!("{}/{}", d.name, el.name);
+        let target = ExportTarget {
+            doc: d,
+            el,
+            part: None,
+        };
+        match data::save(app, &target).await {
+            Ok(res) => {
+                done = Some((label, key, res));
+                break;
+            }
+            Err(e) => tried.push(format!("{label}: {e}")),
+        }
+    }
+    match done {
+        Some((label, key, res)) => {
+            let bytes = std::fs::read(&res.file).map_err(|e| e.to_string())?;
+            let size = stl_size(&bytes);
+            step(
+                "assembly-export",
+                size.is_some_and(|s| s.iter().all(|v| *v > 0.1 && *v < 5000.0)),
+                format!(
+                    "{label}: {} bytes, size mm {size:?} -> {} (skipped: {tried:?})",
+                    res.bytes, res.file
+                ),
+            );
+            let check = data::check_exports(app).await?;
+            step(
+                "assembly-change-check",
+                !check.stale.contains(&key),
+                format!("just-exported {key} fresh"),
+            );
+        }
+        None => step(
+            "assembly-export",
+            tried.is_empty(),
+            format!("no assembly exported: {tried:?}"),
+        ),
+    }
     Ok(())
+}
+
+/// Bounding box size of a single binary STL, or None when `bytes` is not one
+/// (for example a zip of several).
+fn stl_size(bytes: &[u8]) -> Option<[f32; 3]> {
+    let n = u32::from_le_bytes(bytes.get(80..84)?.try_into().ok()?) as usize;
+    if n == 0 || bytes.len() != 84 + 50 * n {
+        return None;
+    }
+    let mut lo = [f32::MAX; 3];
+    let mut hi = [f32::MIN; 3];
+    for t in 0..n {
+        let tri = &bytes[84 + 50 * t..];
+        for v in 0..3 {
+            for (a, (lo, hi)) in lo.iter_mut().zip(hi.iter_mut()).enumerate() {
+                let o = 12 + v * 12 + a * 4;
+                let x = f32::from_le_bytes(tri[o..o + 4].try_into().ok()?);
+                *lo = lo.min(x);
+                *hi = hi.max(x);
+            }
+        }
+    }
+    Some([hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]])
 }

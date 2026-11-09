@@ -14,10 +14,12 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
+use std::time::{Duration, Instant};
 
 use reqwest::Response;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tauri::async_runtime::Mutex as AsyncMutex;
 use tauri::{AppHandle, Manager};
 
@@ -273,11 +275,6 @@ struct RawElement {
     data_type: Option<String>,
     microversion_id: Option<String>,
     thumbnail_info: Option<RawThumbnail>,
-}
-
-fn visible(mut data: ElementsCache) -> ElementsCache {
-    data.items.retain(|e| !is_stale_3mf_blob(e));
-    data
 }
 
 async fn fetch_elements(app: &AppHandle, doc: &Doc) -> Result<Vec<Element>, String> {
@@ -550,7 +547,7 @@ async fn cached_thumb(
 // ---------- export ----------
 
 /// Exports from Onshape and writes to the stable path. Launches nothing.
-/// Records the tab's microversion for `check_exports`, read from a fresh
+/// Records the tab's `tab_signature` for `check_exports`, read from a fresh
 /// element list (1 call) taken *before* the export: an edit made during the
 /// export then shows as a change instead of being hidden.
 pub async fn save(app: &AppHandle, target: &ExportTarget) -> Result<SaveResult, String> {
@@ -558,11 +555,20 @@ pub async fn save(app: &AppHandle, target: &ExportTarget) -> Result<SaveResult, 
     check_id("document", &doc.id)?;
     check_id("element", &el.id)?;
     let ws = workspace(doc)?;
-    let microversion = get_elements(app, doc, Refresh::Normal)
-        .await
-        .ok()
-        .and_then(|r| r.data.items.into_iter().find(|e| e.id == el.id))
-        .map_or_else(|| el.microversion_id.clone(), |e| e.microversion_id);
+    let mut current: HashMap<(String, String), Option<String>> =
+        match get_elements(app, doc, Refresh::Normal).await {
+            Ok(r) => r
+                .data
+                .items
+                .into_iter()
+                .map(|e| ((doc.id.clone(), e.id), e.microversion_id))
+                .collect(),
+            Err(_) => HashMap::new(),
+        };
+    current
+        .entry((doc.id.clone(), el.id.clone()))
+        .or_insert_with(|| el.microversion_id.clone());
+    let mut deps = vec![];
     let (bytes, ext) = match el.element_type.as_str() {
         "PARTSTUDIO" => {
             let mut url = api_url(&format!(
@@ -598,6 +604,19 @@ pub async fn save(app: &AppHandle, target: &ExportTarget) -> Result<SaveResult, 
                 blob_ext(el.data_type.as_deref(), &el.name),
             )
         }
+        "ASSEMBLY" => {
+            let def: AssemblyDef = fetch_json(
+                app,
+                &format!("/api/v6/assemblies/d/{}/w/{ws}/e/{}", doc.id, el.id),
+                "assembly",
+            )
+            .await?;
+            if def.root_assembly.instances.is_empty() {
+                return Err("this assembly is empty".into());
+            }
+            deps = def.same_doc_deps(&doc.id, &el.id);
+            (export_assembly(app, doc, ws, el).await?, ".stl")
+        }
         other => return Err(format!("unsupported element type {other}")),
     };
 
@@ -613,7 +632,8 @@ pub async fn save(app: &AppHandle, target: &ExportTarget) -> Result<SaveResult, 
     let record = ExportRecord {
         doc_id: doc.id.clone(),
         element_id: el.id.clone(),
-        element_microversion: microversion,
+        element_microversion: tab_signature(&doc.id, &el.id, &deps, &current),
+        deps,
         exported_at: now_iso(),
     };
     update_records(app, |r| {
@@ -624,6 +644,93 @@ pub async fn save(app: &AppHandle, target: &ExportTarget) -> Result<SaveResult, 
         file: path.to_string_lossy().into_owned(),
         bytes: bytes.len(),
     })
+}
+
+async fn fetch_json<T: DeserializeOwned>(
+    app: &AppHandle,
+    path: &str,
+    what: &str,
+) -> Result<T, String> {
+    let res = fetch(app, path, JSON_ACCEPT).await?;
+    if !res.status().is_success() {
+        return Err(http_error(what, res).await);
+    }
+    res.json()
+        .await
+        .map_err(|e| format!("bad {what} response: {}", error_chain(&e)))
+}
+
+/// How long an assembly export may take before it is given up on.
+const TRANSLATION_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Onshape has no direct STL download for assemblies: start a translation,
+/// poll it until done, then download the result (one STL of every part in
+/// its assembled position). 3 calls plus one per poll; the polls back off
+/// from 1 to 5 seconds.
+async fn export_assembly(
+    app: &AppHandle,
+    doc: &Doc,
+    ws: &str,
+    el: &Element,
+) -> Result<Vec<u8>, String> {
+    let url = api_url(&format!(
+        "/api/v6/assemblies/d/{}/w/{ws}/e/{}/translations",
+        doc.id, el.id
+    ))?;
+    let body = json!({
+        "formatName": "STL",
+        "storeInDocument": false,
+        "grouping": true,
+        "stlMode": "BINARY",
+        "destinationName": el.name,
+    });
+    let res = onshape(app).post_json(app, url, &body).await?;
+    if !res.status().is_success() {
+        return Err(http_error("assembly export", res).await);
+    }
+    let mut t: Translation = res
+        .json()
+        .await
+        .map_err(|e| format!("bad assembly export response: {}", error_chain(&e)))?;
+    check_id("translation", &t.id)?;
+    let started = Instant::now();
+    let mut delay = Duration::from_secs(1);
+    while t.request_state == "ACTIVE" {
+        if started.elapsed() > TRANSLATION_TIMEOUT {
+            return Err("assembly export timed out in Onshape".into());
+        }
+        tokio::time::sleep(delay).await;
+        delay = (delay + Duration::from_secs(1)).min(Duration::from_secs(5));
+        let id = t.id.clone();
+        t = fetch_json(
+            app,
+            &format!("/api/v6/translations/{id}"),
+            "assembly export",
+        )
+        .await?;
+        t.id = id;
+    }
+    if t.request_state != "DONE" {
+        let why = t.failure_reason.unwrap_or_else(|| t.request_state.clone());
+        return Err(format!("assembly export failed in Onshape: {why}"));
+    }
+    let fid = t
+        .result_external_data_ids
+        .and_then(|ids| ids.into_iter().next())
+        .ok_or("assembly export finished without a file")?;
+    check_id("export file", &fid)?;
+    let res = fetch(
+        app,
+        &format!("/api/v6/documents/d/{}/externaldata/{fid}", doc.id),
+        "*/*",
+    )
+    .await?;
+    if !res.status().is_success() {
+        return Err(http_error("assembly download", res).await);
+    }
+    let mut bytes = body_bytes(res).await?;
+    stl_to_mm(&mut bytes)?;
+    Ok(bytes)
 }
 
 // ---------- change checks ----------
