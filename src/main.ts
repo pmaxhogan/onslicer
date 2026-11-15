@@ -25,6 +25,7 @@ import {
   fileName,
   filterDocs,
   fmtDate,
+  listWord,
   plural,
   refreshSummary,
   secretPlaceholder,
@@ -350,11 +351,12 @@ async function rescanSlicers(): Promise<void> {
 
 // ---------- document dialog ----------
 
-// One entry per tab card. Part studios also carry their parts box (a
-// full-width grid row under the card); `parts` is null until the list is
-// loaded (from disk cache or an explicit fetch). `expanded` is the user's
-// toggle; `autoExpanded` is set by the filter when a part name matches, and is
-// cleared by the user's next toggle or filter edit.
+// One entry per tab card. Part studios and assemblies also carry a box (a
+// full-width grid row under the card) listing their parts or instances;
+// `parts` is null until the list is loaded (from disk cache or an explicit
+// fetch). `expanded` is the user's toggle; `autoExpanded` is set by the filter
+// when a part name matches, and is cleared by the user's next toggle or
+// filter edit.
 interface Entry {
   el: Element;
   row: HTMLElement;
@@ -396,14 +398,19 @@ function resetThumbObserver(): void {
   );
 }
 
-// A gallery card: image placeholder with a type badge, the name, and an
-// actions row the caller fills.
-function itemCard(name: string, badge: string): { card: HTMLElement; actions: HTMLElement } {
+// A gallery card: image placeholder with a type badge, the name (and an
+// optional muted line under it), and an actions row the caller fills.
+function itemCard(
+  name: string,
+  badge: string,
+  sub = "",
+): { card: HTMLElement; actions: HTMLElement } {
   const card = document.createElement("div");
   card.className = "card item";
+  const subLine = sub ? `<div class="sub" title="${esc(sub)}">${esc(sub)}</div>` : "";
   card.innerHTML = `
     <div class="thumb"><div class="noimg">\u2026</div><span class="badge">${esc(badge)}</span></div>
-    <div class="info"><div class="name" title="${esc(name)}">${esc(name)}</div></div>
+    <div class="info"><div class="name" title="${esc(name)}">${esc(name)}</div>${subLine}</div>
     <div class="actions"></div>`;
   const actions = card.querySelector<HTMLElement>(".actions");
   if (!actions) throw new Error("card without actions");
@@ -451,11 +458,15 @@ async function openDoc(d: Doc, refresh: Refresh = "none"): Promise<void> {
         expanded: false,
         autoExpanded: false,
       };
-      if (el.elementType === "PARTSTUDIO") {
+      const word = listWord(el.elementType);
+      if (word) {
         const expand = document.createElement("button");
         expand.className = "expand";
-        expand.textContent = "\u25b8 parts";
-        expand.title = "Show individual parts (1 API call to list them, then cached)";
+        expand.textContent = `\u25b8 ${word}`;
+        expand.title =
+          word === "parts"
+            ? "Show individual parts (1 API call to list them, then cached)"
+            : "Show the assembly's instances, each exportable in its own configuration (about 1 API call to list them, then cached)";
         expand.onclick = () => void togglePartList(entry);
         actions.appendChild(expand);
         entry.expandBtn = expand;
@@ -471,8 +482,7 @@ async function openDoc(d: Doc, refresh: Refresh = "none"): Promise<void> {
       const spacer = document.createElement("span");
       spacer.className = "grow";
       actions.appendChild(spacer);
-      if (el.printable)
-        addActions(actions, el, null, el.elementType === "PARTSTUDIO" ? "Print all" : "Print");
+      if (el.printable) addActions(actions, el, null, word ? "Print all" : "Print");
       lazyThumb(card, () => api.getItemThumb(d, el, null));
       grid.appendChild(card);
       if (entry.box) grid.appendChild(entry.box);
@@ -522,7 +532,7 @@ function renderParts(entry: Entry, items: Part[]): void {
   grid.className = "pgrid";
   box.appendChild(grid);
   for (const p of items) {
-    const { card, actions } = itemCard(p.name, p.bodyType);
+    const { card, actions } = itemCard(p.name, p.bodyType || "part", p.source?.configLabel ?? "");
     const spacer = document.createElement("span");
     spacer.className = "grow";
     actions.appendChild(spacer);
@@ -539,7 +549,10 @@ async function loadParts(entry: Entry): Promise<boolean> {
   if (!box || !currentDoc) return false;
   box.innerHTML = '<div style="padding:8px 12px"><span class="spin"></span></div>';
   try {
-    const data = await api.getParts(currentDoc, entry.el.id);
+    const data =
+      entry.el.elementType === "ASSEMBLY"
+        ? await api.getAsmItems(currentDoc, entry.el.id)
+        : await api.getParts(currentDoc, entry.el.id);
     if (gen !== dlgGen) return false;
     renderParts(entry, data.items);
     return true;
@@ -582,7 +595,7 @@ function applyDlgFilter(fromInput = false): void {
     const open = !e.row.hidden && (e.expanded || e.autoExpanded);
     e.box.hidden = !open;
     e.row.classList.toggle("open", open);
-    e.expandBtn.textContent = open ? "\u25be parts" : "\u25b8 parts";
+    e.expandBtn.textContent = `${open ? "\u25be" : "\u25b8"} ${listWord(e.el.elementType) ?? ""}`;
     for (const { p, row } of e.partRows) row.hidden = partOnly && !hit(p.name);
   }
   const note = dlgNote;
@@ -596,11 +609,11 @@ function applyDlgFilter(fromInput = false): void {
   if (q && !shown) say("No matches.");
   if (unsearched.length) {
     const n = unsearched.length;
-    say(`Part names not searched in ${plural(n, "part studio")} (parts not listed yet).`);
+    say(`Part names not searched in ${plural(n, "tab")} (not listed yet).`);
     const btn = document.createElement("button");
-    btn.textContent = `List parts (${plural(n, "API call")})`;
+    btn.textContent = `List them (about ${plural(n, "API call")})`;
     btn.title =
-      "Fetch the part lists of the hidden part studios so their part names can be searched";
+      "Fetch the part and instance lists of the hidden tabs so their names can be searched";
     btn.onclick = async () => {
       btn.disabled = true;
       btn.innerHTML = '<span class="spin"></span>';

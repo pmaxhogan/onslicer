@@ -26,11 +26,27 @@ export interface Element {
 }
 
 export interface Part {
+  // For an assembly instance: the instance's id (see `source`).
   partId: string;
   name: string;
   bodyType: string;
   isMesh: boolean;
   thumbHref: string | null;
+  // Set on the instances listed under an assembly.
+  source?: ItemSource;
+}
+
+// The part an assembly instance shows, in the configuration it shows it in.
+export interface ItemSource {
+  documentId: string;
+  wvm: "w" | "v" | "m";
+  wvmId: string;
+  elementId: string;
+  partId: string;
+  configuration: string;
+  // The configuration values that tell this instance apart from the other
+  // instances of the same part, e.g. "motor_depth 60 mm"; often "".
+  configLabel: string;
 }
 
 // invoke("get_docs", { refresh })

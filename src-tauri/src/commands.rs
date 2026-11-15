@@ -44,6 +44,17 @@ pub async fn get_parts(
     data::get_parts(&app, &doc, &element_id, refresh).await
 }
 
+/// The part instances of an assembly, shaped like a part list.
+#[tauri::command]
+pub async fn get_asm_items(
+    app: AppHandle,
+    doc: Doc,
+    element_id: String,
+    refresh: bool,
+) -> Result<PartsResult, String> {
+    data::get_asm_items(&app, &doc, &element_id, refresh).await
+}
+
 /// Raw PNG bytes (an ArrayBuffer in the UI); empty when the doc has no
 /// thumbnail.
 #[tauri::command]

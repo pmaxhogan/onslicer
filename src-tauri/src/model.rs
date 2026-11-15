@@ -66,6 +66,30 @@ pub struct Part {
     /// The 300x170 thumbnail, when Onshape has one for this part.
     #[serde(default)]
     pub thumb_href: Option<String>,
+    /// Set on an assembly instance (listed under its assembly; `part_id` is
+    /// then the instance's id): where its geometry comes from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<ItemSource>,
+}
+
+/// The part an assembly instance shows, in the configuration it shows it in.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemSource {
+    pub document_id: String,
+    /// "w", "v" or "m": what kind of id `wvm_id` is (workspace, version,
+    /// microversion).
+    pub wvm: String,
+    pub wvm_id: String,
+    pub element_id: String,
+    pub part_id: String,
+    /// As Onshape encodes it ("default", or "name=value;..."); goes into the
+    /// export URL as is.
+    pub configuration: String,
+    /// The configuration values that tell this instance apart from other
+    /// instances of the same part in the assembly, for display; often empty.
+    #[serde(default)]
+    pub config_label: String,
 }
 
 /// cache/docs.json
@@ -419,27 +443,225 @@ pub fn stale_keys(
         .collect()
 }
 
-/// The parts of an assembly definition (`GET /assemblies/...`) that matter
-/// for an export: is there anything in it, and which tabs of its own
-/// document it pulls parts or sub-assemblies from.
+/// The parts of an assembly definition (`GET /assemblies/...` with
+/// `includeNonSolids=true`, without which composite parts are left out) that
+/// matter here: its instances, the sub-assemblies they nest, and the body
+/// type of each part.
 #[derive(Deserialize, Debug, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AssemblyDef {
     pub root_assembly: SubAssembly,
     pub sub_assemblies: Vec<SubAssembly>,
+    pub parts: Vec<AsmPart>,
 }
 
 #[derive(Deserialize, Debug, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct SubAssembly {
     pub instances: Vec<AsmInstance>,
+    pub document_id: String,
+    pub element_id: String,
+    pub full_configuration: String,
 }
 
 #[derive(Deserialize, Debug, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AsmInstance {
+    pub id: String,
+    pub name: String,
+    /// "Part" or "Assembly".
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub suppressed: bool,
     pub document_id: String,
     pub element_id: String,
+    pub part_id: String,
+    pub configuration: String,
+    pub full_configuration: String,
+    pub document_microversion: String,
+    /// Set when the instance comes from a version of another document.
+    pub document_version: Option<String>,
+}
+
+#[derive(Deserialize, Debug, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AsmPart {
+    pub document_id: String,
+    pub element_id: String,
+    pub part_id: String,
+    pub full_configuration: String,
+    pub body_type: String,
+}
+
+/// Sub-assemblies nest no deeper than this; deeper is taken for a cycle.
+const MAX_ASM_DEPTH: usize = 16;
+
+/// A part instance found by [`assembly_items`], with its id path and its
+/// display name from the root.
+struct FoundInstance<'a> {
+    path: String,
+    name: String,
+    inst: &'a AsmInstance,
+}
+
+fn walk_instances<'a>(
+    def: &'a AssemblyDef,
+    insts: &'a [AsmInstance],
+    path: &str,
+    name: &str,
+    depth: usize,
+    out: &mut Vec<FoundInstance<'a>>,
+) {
+    for i in insts.iter().filter(|i| !i.suppressed) {
+        let path = if path.is_empty() {
+            i.id.clone()
+        } else {
+            format!("{path}/{}", i.id)
+        };
+        let name = if name.is_empty() {
+            i.name.clone()
+        } else {
+            format!("{name} / {}", i.name)
+        };
+        match i.kind.as_str() {
+            "Part" if !i.part_id.is_empty() => out.push(FoundInstance {
+                path,
+                name,
+                inst: i,
+            }),
+            "Assembly" if depth < MAX_ASM_DEPTH => {
+                let sub = def.sub_assemblies.iter().find(|s| {
+                    s.document_id == i.document_id
+                        && s.element_id == i.element_id
+                        && s.full_configuration == i.full_configuration
+                });
+                if let Some(sub) = sub {
+                    walk_instances(def, &sub.instances, &path, &name, depth + 1, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Every part instance of an assembly, sub-assemblies flattened into their
+/// parts ("motor <1> / casing <1>"), as items to list and export one by one.
+/// Suppressed instances and bodies that cannot be printed (sheets, wires) are
+/// left out. `workspace` is the workspace of `doc_id`, in which the assembly
+/// sees the other tabs of its own document.
+pub fn assembly_items(def: &AssemblyDef, doc_id: &str, workspace: &str) -> Vec<Part> {
+    let mut found = Vec::new();
+    walk_instances(def, &def.root_assembly.instances, "", "", 0, &mut found);
+    let body_type = |i: &AsmInstance| {
+        def.parts
+            .iter()
+            .find(|p| {
+                p.document_id == i.document_id
+                    && p.element_id == i.element_id
+                    && p.part_id == i.part_id
+                    && p.full_configuration == i.full_configuration
+            })
+            .map(|p| p.body_type.clone())
+            .unwrap_or_default()
+    };
+    // Configurations of every instance of each part, to label what differs.
+    let configs_of = |i: &AsmInstance| -> Vec<&str> {
+        found
+            .iter()
+            .map(|f| f.inst)
+            .filter(|o| {
+                o.document_id == i.document_id
+                    && o.element_id == i.element_id
+                    && o.part_id == i.part_id
+            })
+            .map(|o| o.full_configuration.as_str())
+            .collect()
+    };
+    found
+        .iter()
+        .filter_map(|f| {
+            let i = f.inst;
+            let body_type = body_type(i);
+            if matches!(body_type.as_str(), "sheet" | "wire" | "point") {
+                return None;
+            }
+            let version = i.document_version.as_deref().filter(|v| !v.is_empty());
+            let (wvm, wvm_id) = match version {
+                Some(v) => ("v", v.to_owned()),
+                None if i.document_id == doc_id => ("w", workspace.to_owned()),
+                None => ("m", i.document_microversion.clone()),
+            };
+            Some(Part {
+                part_id: part_file_id(&f.path),
+                name: f.name.clone(),
+                body_type,
+                is_mesh: false,
+                thumb_href: None,
+                source: Some(ItemSource {
+                    document_id: i.document_id.clone(),
+                    wvm: wvm.into(),
+                    wvm_id,
+                    element_id: i.element_id.clone(),
+                    part_id: i.part_id.clone(),
+                    configuration: i.configuration.clone(),
+                    config_label: config_label(&i.full_configuration, &configs_of(i)),
+                }),
+            })
+        })
+        .collect()
+}
+
+/// "a=1;b=2" as (name, value) pairs; "default" and "" have none.
+fn config_pairs(config: &str) -> Vec<(&str, &str)> {
+    config
+        .split(';')
+        .filter_map(|p| p.split_once('='))
+        .collect()
+}
+
+/// The values of `config` that differ among `all` (the configurations of
+/// every instance of the same part), readable: "motor_depth 60 mm". Empty
+/// when they are all alike.
+pub fn config_label(config: &str, all: &[&str]) -> String {
+    let parsed: Vec<Vec<(&str, &str)>> = all.iter().map(|c| config_pairs(c)).collect();
+    let differs = |pairs: &[(&str, &str)], name: &str, value: &str| {
+        !pairs.iter().any(|(k, v)| *k == name && *v == value)
+    };
+    config_pairs(config)
+        .into_iter()
+        .filter(|(name, value)| parsed.iter().any(|p| differs(p, name, value)))
+        .map(|(name, value)| format!("{name} {}", config_value(value)))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// A configuration value as Onshape encodes it ("0.06+meter", "true",
+/// "Option_2"), readable, with lengths in mm.
+fn config_value(v: &str) -> String {
+    let Some((num, unit)) = v.split_once('+') else {
+        return v.to_owned();
+    };
+    let Ok(x) = num.parse::<f64>() else {
+        return v.replace('+', " ");
+    };
+    let round = |x: f64| (x * 1e6).round() / 1e6;
+    match unit {
+        "meter" => format!("{} mm", round(x * 1000.0)),
+        "centimeter" => format!("{} mm", round(x * 10.0)),
+        "millimeter" => format!("{} mm", round(x)),
+        "inch" => format!("{} in", round(x)),
+        "foot" => format!("{} ft", round(x)),
+        "degree" => format!("{} deg", round(x)),
+        "radian" => format!("{} rad", round(x)),
+        other => format!("{} {other}", round(x)),
+    }
+}
+
+/// The file name (before `sanitize`, which would turn the brackets into
+/// underscores) of an assembly instance's export:
+/// "motor <1> / casing <2>" -> "motor 1 - casing 2".
+pub fn item_file_stem(name: &str) -> String {
+    name.replace(" / ", " - ").replace(['<', '>'], "")
 }
 
 impl AssemblyDef {
@@ -788,6 +1010,81 @@ mod tests {
         assert_eq!(def.same_doc_deps("d", "asm"), vec!["ps1", "ps2", "sub"]);
         let empty: AssemblyDef = serde_json::from_str("{}").unwrap();
         assert!(empty.root_assembly.instances.is_empty());
+    }
+
+    #[test]
+    fn assembly_items_flattens_instances_and_labels_their_configurations() {
+        let def: AssemblyDef = serde_json::from_str(
+            r#"{
+              "rootAssembly": {"instances": [
+                {"type": "Part", "id": "i1", "name": "mount <1>", "documentId": "d",
+                 "elementId": "ps", "partId": "JhD",
+                 "configuration": "depth=0.04+meter;show=false",
+                 "fullConfiguration": "depth=0.04+meter;show=false"},
+                {"type": "Part", "id": "i2", "name": "mount <2>", "documentId": "d",
+                 "elementId": "ps", "partId": "JhD",
+                 "configuration": "depth=0.06+meter;show=false",
+                 "fullConfiguration": "depth=0.06+meter;show=false"},
+                {"type": "Part", "id": "i3", "name": "gone <1>", "suppressed": true,
+                 "documentId": "d", "elementId": "ps", "partId": "JkD"},
+                {"type": "Part", "id": "i4", "name": "skin <1>", "documentId": "d",
+                 "elementId": "ps", "partId": "JmD", "configuration": "default",
+                 "fullConfiguration": "default"},
+                {"type": "Assembly", "id": "a/1", "name": "motor <1>", "documentId": "d",
+                 "elementId": "sub", "fullConfiguration": "default"}
+              ]},
+              "subAssemblies": [{"documentId": "d", "elementId": "sub",
+                "fullConfiguration": "default", "instances": [
+                {"type": "Part", "id": "s1", "name": "shaft <1>", "documentId": "other",
+                 "elementId": "ext", "partId": "JPD", "configuration": "default",
+                 "fullConfiguration": "default", "documentVersion": "ver"}
+              ]}],
+              "parts": [
+                {"documentId": "d", "elementId": "ps", "partId": "JhD",
+                 "fullConfiguration": "depth=0.04+meter;show=false", "bodyType": "composite"},
+                {"documentId": "d", "elementId": "ps", "partId": "JmD",
+                 "fullConfiguration": "default", "bodyType": "sheet"}
+              ]
+            }"#,
+        )
+        .unwrap();
+        let items = assembly_items(&def, "d", "ws");
+        let names: Vec<&str> = items.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["mount <1>", "mount <2>", "motor <1> / shaft <1>"]);
+        let src = |i: usize| items[i].source.clone().unwrap();
+        assert_eq!(items[0].part_id, "i1");
+        assert_eq!(items[0].body_type, "composite");
+        assert_eq!((src(0).wvm.as_str(), src(0).wvm_id.as_str()), ("w", "ws"));
+        assert_eq!(src(0).configuration, "depth=0.04+meter;show=false");
+        assert_eq!(src(0).config_label, "depth 40 mm");
+        assert_eq!(src(1).config_label, "depth 60 mm");
+        // A nested id path is not a plain id, so it is hashed.
+        assert!(items[2].part_id.starts_with('x'));
+        assert_eq!((src(2).wvm.as_str(), src(2).wvm_id.as_str()), ("v", "ver"));
+        assert_eq!(src(2).config_label, "");
+    }
+
+    #[test]
+    fn config_labels_read_like_units() {
+        assert_eq!(config_value("0.1+meter"), "100 mm");
+        assert_eq!(config_value("2.5+centimeter"), "25 mm");
+        assert_eq!(config_value("0.5+inch"), "0.5 in");
+        assert_eq!(config_value("90+degree"), "90 deg");
+        assert_eq!(config_value("true"), "true");
+        assert_eq!(config_value("Option_2"), "Option_2");
+        assert_eq!(config_label("default", &["default", "a=1"]), "");
+        assert_eq!(
+            config_label("a=1;b=x", &["a=1;b=x", "a=2;b=x"]),
+            "a 1",
+            "values all instances share are left out"
+        );
+    }
+
+    #[test]
+    fn item_file_stem_reads_well_after_sanitizing() {
+        let stem = item_file_stem("motor <1> / casing <2>");
+        assert_eq!(stem, "motor 1 - casing 2");
+        assert_eq!(sanitize(&stem), stem);
     }
 
     fn stl(header: &str, verts: &[f32]) -> Vec<u8> {

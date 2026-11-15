@@ -9,7 +9,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
 use crate::data;
-use crate::model::{export_key, Element, ExportTarget, Refresh};
+use crate::model::{export_key, Doc, Element, ExportTarget, Part, Refresh};
 use crate::onshape::Onshape;
 use crate::settings;
 
@@ -326,6 +326,111 @@ async fn steps(app: &AppHandle, out: &mut Vec<Step>) -> Result<(), String> {
             "assembly-export",
             tried.is_empty(),
             format!("no assembly exported: {tried:?}"),
+        ),
+    }
+
+    // Single assembly instances: two instances of one part in different
+    // configurations must export different geometry (proves the configuration
+    // reaches Onshape). Else any one instance. Lists cost 1+ call each.
+    let mut assemblies = vec![];
+    for d in std::iter::once(&doc).chain(docs.data.items.iter().filter(|d| d.id != doc.id)) {
+        if let Some(els) = data::raw_elements(app, &d.id).await? {
+            for e in els
+                .items
+                .into_iter()
+                .filter(|e| e.element_type == "ASSEMBLY")
+            {
+                assemblies.push((d.clone(), e));
+            }
+        }
+    }
+    let mut any = None;
+    let mut pair = None;
+    for (d, el) in assemblies.into_iter().take(8) {
+        let Ok(items) = data::get_asm_items(app, &d, &el.id, true).await else {
+            continue;
+        };
+        let items = items.data.items;
+        let configured = items.iter().enumerate().find_map(|(i, a)| {
+            let sa = a.source.as_ref()?;
+            items[i + 1..].iter().find_map(|b| {
+                let sb = b.source.as_ref()?;
+                let same_part = (&sa.document_id, &sa.element_id, &sa.part_id)
+                    == (&sb.document_id, &sb.element_id, &sb.part_id);
+                (same_part && sa.configuration != sb.configuration).then(|| (a.clone(), b.clone()))
+            })
+        });
+        if let Some((a, b)) = configured {
+            pair = Some((d, el, a, b));
+            break;
+        }
+        if any.is_none() {
+            if let Some(first) = items.first() {
+                any = Some((d.clone(), el.clone(), first.clone()));
+            }
+        }
+    }
+    let export = |d: Doc, el: Element, p: Part| async move {
+        let key = export_key(&d.id, &el.id, Some(&p.part_id));
+        let target = ExportTarget {
+            doc: d,
+            el,
+            part: Some(p),
+        };
+        let res = data::save(app, &target).await?;
+        let bytes = std::fs::read(&res.file).map_err(|e| e.to_string())?;
+        Ok::<_, String>((key, res, stl_size(&bytes)))
+    };
+    match (pair, any) {
+        (Some((d, el, a, b)), _) => {
+            let label = format!(
+                "{}/{}: {} [{}] vs {} [{}]",
+                d.name,
+                el.name,
+                a.name,
+                a.source.as_ref().map_or("", |s| s.config_label.as_str()),
+                b.name,
+                b.source.as_ref().map_or("", |s| s.config_label.as_str())
+            );
+            let (key, ra, sa) = export(d.clone(), el.clone(), a).await?;
+            let (_, rb, sb) = export(d, el, b).await?;
+            step(
+                "instance-export",
+                sa.is_some() && sb.is_some() && sa != sb && ra.file != rb.file,
+                format!(
+                    "{label}: sizes mm {sa:?} vs {sb:?} -> {} / {}",
+                    ra.file, rb.file
+                ),
+            );
+            let check = data::check_exports(app).await?;
+            step(
+                "instance-change-check",
+                !check.stale.contains(&key),
+                format!("just-exported {key} fresh"),
+            );
+            let again = data::resave(app, &key).await?;
+            step(
+                "instance-resave",
+                again.file == ra.file,
+                format!("{} bytes -> {}", again.bytes, again.file),
+            );
+        }
+        (None, Some((d, el, p))) => {
+            let label = format!("{}/{}: {}", d.name, el.name, p.name);
+            let (_, r, s) = export(d, el, p).await?;
+            step(
+                "instance-export",
+                s.is_some(),
+                format!(
+                    "{label} (no configured pair found): size mm {s:?} -> {}",
+                    r.file
+                ),
+            );
+        }
+        (None, None) => step(
+            "instance-export",
+            true,
+            "no assembly instance available to test (skipped)".into(),
         ),
     }
     Ok(())

@@ -34,6 +34,9 @@ Tauri 2 desktop app (Windows, NSIS): browse Onshape documents, export STL, open 
 - Onshape's AWS WAF challenges the export endpoints (`/stl`, `/translations`) for any
   non-browser client without API keys. `waf.rs` passes the check in a hidden webview window
   (shown after 3 s or for a CAPTCHA) and sends its `aws-waf-token` cookie, memory only.
+- `GET /assemblies/...` leaves composite-part instances out unless `includeNonSolids=true`.
+  Assembly instances (`get_asm_items`) export through the part studio STL endpoint with the
+  instance's `configuration`, and are cached in `cache/parts/` like part lists.
 - No settings or cache migration code: change the stored shape and move existing data by hand.
 - Secrets: never in `settings.json`; keyring service `com.pmaxhogan.onslicer`, long values
   chunked (see `auth.rs`).

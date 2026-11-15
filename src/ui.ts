@@ -17,6 +17,13 @@ export function esc(s: string | null | undefined): string {
   return (s ?? "").replace(/[&<>"]/g, (c) => ESCAPES[c] ?? c);
 }
 
+// What the expand button of a tab card lists, or null when it lists nothing.
+export function listWord(elementType: string): string | null {
+  if (elementType === "PARTSTUDIO") return "parts";
+  if (elementType === "ASSEMBLY") return "instances";
+  return null;
+}
+
 // Toast after an auto-save pass, from the saved files' names.
 export function autoSavedSummary(files: string[]): string {
   if (files.length === 1) return `Auto-saved ${files[0]} 2713`;

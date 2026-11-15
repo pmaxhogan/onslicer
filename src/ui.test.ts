@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AuthSettings, Doc, SlicerState } from "./types";
 import {
+  listWord,
   autoSavedSummary,
   authConfigured,
   buildAuthInput,
@@ -73,6 +74,14 @@ describe("formatting", () => {
     expect(fileName("C:\\Users\\me\\exports\\a\\b.stl")).toBe("b.stl");
     expect(fileName("/home/me/b.stl")).toBe("b.stl");
     expect(fileName("b.stl")).toBe("b.stl");
+  });
+});
+
+describe("listWord", () => {
+  it("lists parts of part studios and instances of assemblies", () => {
+    expect(listWord("PARTSTUDIO")).toBe("parts");
+    expect(listWord("ASSEMBLY")).toBe("instances");
+    expect(listWord("BLOB")).toBeNull();
   });
 });
 

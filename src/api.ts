@@ -31,6 +31,10 @@ export const peekParts = (doc: Doc, elementId: string) =>
 export const getParts = (doc: Doc, elementId: string, refresh = false) =>
   invoke<PartsResult>("get_parts", { doc, elementId, refresh });
 
+// The part instances of an assembly, shaped like a part list (cached the same way).
+export const getAsmItems = (doc: Doc, elementId: string, refresh = false) =>
+  invoke<PartsResult>("get_asm_items", { doc, elementId, refresh });
+
 export const saveExport = (target: ExportTarget) => invoke<SaveResult>("save_export", { target });
 
 export const printExport = (target: ExportTarget) => invoke<SaveResult>("print_export", { target });

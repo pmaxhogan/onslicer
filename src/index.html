@@ -227,9 +227,15 @@
         text-overflow: ellipsis;
         white-space: nowrap;
       }
-      .card .date {
+      .card .date,
+      .card .sub {
         color: var(--muted);
         font-size: 12px;
+      }
+      .card .sub {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
       dialog {
         background: var(--panel);

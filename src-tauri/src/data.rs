@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
-use reqwest::Response;
+use reqwest::{Response, Url};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -460,6 +460,7 @@ pub async fn get_parts(
         items: raw
             .into_iter()
             .map(|p| Part {
+                source: None,
                 part_id: p.part_id,
                 name: p.name.unwrap_or_default(),
                 body_type: p.body_type.unwrap_or_default(),
@@ -578,16 +579,7 @@ pub async fn save(app: &AppHandle, target: &ExportTarget) -> Result<SaveResult, 
             if let Some(p) = part {
                 url.query_pairs_mut().append_pair("partIds", &p.part_id);
             }
-            let res = onshape(app).get(app, url, "*/*").await?;
-            if !res.status().is_success() {
-                let status = res.status().as_u16();
-                let body = res.text().await.unwrap_or_default();
-                return Err(format!(
-                    "STL export failed ({status}): {}",
-                    snippet(&body, 200)
-                ));
-            }
-            (body_bytes(res).await?, ".stl")
+            (get_stl(app, url).await?, ".stl")
         }
         "BLOB" => {
             let res = fetch(
@@ -604,28 +596,34 @@ pub async fn save(app: &AppHandle, target: &ExportTarget) -> Result<SaveResult, 
                 blob_ext(el.data_type.as_deref(), &el.name),
             )
         }
-        "ASSEMBLY" => {
-            let def: AssemblyDef = fetch_json(
-                app,
-                &format!("/api/v6/assemblies/d/{}/w/{ws}/e/{}", doc.id, el.id),
-                "assembly",
-            )
-            .await?;
-            if def.root_assembly.instances.is_empty() {
-                return Err("this assembly is empty".into());
+        "ASSEMBLY" => match part {
+            Some(p) => {
+                let src = p
+                    .source
+                    .as_ref()
+                    .ok_or("not an instance of this assembly")?;
+                if src.document_id == doc.id && src.wvm == "w" {
+                    deps = vec![src.element_id.clone()];
+                }
+                (export_instance(app, src).await?, ".stl")
             }
-            deps = def.same_doc_deps(&doc.id, &el.id);
-            (export_assembly(app, doc, ws, el).await?, ".stl")
-        }
+            None => {
+                let def = assembly_def(app, doc, ws, &el.id).await?;
+                if def.root_assembly.instances.is_empty() {
+                    return Err("this assembly is empty".into());
+                }
+                deps = def.same_doc_deps(&doc.id, &el.id);
+                (export_assembly(app, doc, ws, el).await?, ".stl")
+            }
+        },
         other => return Err(format!("unsupported element type {other}")),
     };
 
-    let (_, rel) = export_rel(
-        &doc.name,
-        &el.name,
-        part.as_ref().map(|p| p.name.as_str()),
-        ext,
-    );
+    let part_name = part.as_ref().map(|p| match p.source {
+        Some(_) => item_file_stem(&p.name),
+        None => p.name.clone(),
+    });
+    let (_, rel) = export_rel(&doc.name, &el.name, part_name.as_deref(), ext);
     let path = data_path(app, &rel)?;
     write_file(&path, &bytes).await?;
     let key = export_key(&doc.id, &el.id, part.as_ref().map(|p| p.part_id.as_str()));
@@ -643,6 +641,119 @@ pub async fn save(app: &AppHandle, target: &ExportTarget) -> Result<SaveResult, 
     Ok(SaveResult {
         file: path.to_string_lossy().into_owned(),
         bytes: bytes.len(),
+    })
+}
+
+/// The body of an STL export request.
+async fn get_stl(app: &AppHandle, url: Url) -> Result<Vec<u8>, String> {
+    let res = onshape(app).get(app, url, "*/*").await?;
+    if !res.status().is_success() {
+        let status = res.status().as_u16();
+        let body = res.text().await.unwrap_or_default();
+        return Err(format!(
+            "STL export failed ({status}): {}",
+            snippet(&body, 200)
+        ));
+    }
+    body_bytes(res).await
+}
+
+/// The part an assembly instance shows, in its configuration and in its own
+/// part studio's coordinates (not where the assembly places it). `src` comes
+/// from the UI, so every id is checked before it goes into the URL.
+async fn export_instance(app: &AppHandle, src: &ItemSource) -> Result<Vec<u8>, String> {
+    check_id("document", &src.document_id)?;
+    check_id("element", &src.element_id)?;
+    check_id("part", &src.part_id)?;
+    check_id("workspace or version", &src.wvm_id)?;
+    if !matches!(src.wvm.as_str(), "w" | "v" | "m") {
+        return Err(format!("bad workspace kind {:?}", src.wvm));
+    }
+    let mut url = api_url(&format!(
+        "/api/v6/partstudios/d/{}/{}/{}/e/{}/stl?units=millimeter&mode=binary&grouping=true",
+        src.document_id, src.wvm, src.wvm_id, src.element_id
+    ))?;
+    url.query_pairs_mut().append_pair("partIds", &src.part_id);
+    if !src.configuration.is_empty() && src.configuration != "default" {
+        url.query_pairs_mut()
+            .append_pair("configuration", &src.configuration);
+    }
+    get_stl(app, url).await
+}
+
+/// The assembly's definition, composite parts included.
+async fn assembly_def(
+    app: &AppHandle,
+    doc: &Doc,
+    ws: &str,
+    element_id: &str,
+) -> Result<AssemblyDef, String> {
+    check_id("element", element_id)?;
+    fetch_json(
+        app,
+        &format!(
+            "/api/v6/assemblies/d/{}/w/{ws}/e/{element_id}?includeNonSolids=true",
+            doc.id
+        ),
+        "assembly",
+    )
+    .await
+}
+
+/// The part instances of an assembly (see `assembly_items`), cached like a
+/// part list in `parts_path`, so `peek_parts` and the cache invalidation of
+/// `get_elements` cover them. 1 call for the definition, plus 1 per part
+/// studio of this document they come from whose part list (for thumbnails)
+/// is not cached yet.
+pub async fn get_asm_items(
+    app: &AppHandle,
+    doc: &Doc,
+    element_id: &str,
+    refresh: bool,
+) -> Result<PartsResult, String> {
+    let path = parts_path(app, &doc.id, element_id)?;
+    if !refresh {
+        if let Some(data) = read_parts(&path).await {
+            return Ok(PartsResult {
+                data,
+                from_cache: true,
+            });
+        }
+    }
+    let ws = workspace(doc)?;
+    let def = assembly_def(app, doc, ws, element_id).await?;
+    let mut items = assembly_items(&def, &doc.id, ws);
+    // Thumbnails: the source part's, from its part studio's part list.
+    let studios: BTreeSet<String> = items
+        .iter()
+        .filter_map(|p| p.source.as_ref())
+        .filter(|s| s.document_id == doc.id && s.wvm == "w")
+        .map(|s| s.element_id.clone())
+        .collect();
+    let mut thumbs: HashMap<(String, String), Option<String>> = HashMap::new();
+    for studio in studios {
+        // A part list that fails only costs the thumbnails.
+        if let Ok(parts) = get_parts(app, doc, &studio, false).await {
+            for p in parts.data.items {
+                thumbs.insert((studio.clone(), p.part_id), p.thumb_href);
+            }
+        }
+    }
+    for item in &mut items {
+        if let Some(s) = &item.source {
+            let key = (s.element_id.clone(), s.part_id.clone());
+            item.thumb_href = thumbs.get(&key).cloned().flatten();
+        }
+    }
+    let data = PartsCache {
+        fetched_at: now_iso(),
+        with_thumbs: true,
+        items,
+    };
+    write_json(&path, &data).await?;
+    Ok(PartsResult {
+        data,
+        from_cache: false,
     })
 }
 
@@ -776,18 +887,28 @@ pub async fn resave(app: &AppHandle, key: &str) -> Result<SaveResult, String> {
         .into_iter()
         .find(|e| e.id == rec.element_id)
         .ok_or_else(|| format!("its tab is no longer in {}", doc.name))?;
-    let part = match part_id {
-        None => None,
-        Some(id) => Some(
-            get_parts(app, &doc, &el.id, false)
-                .await?
-                .data
-                .items
-                .into_iter()
-                .find(|p| p.part_id == id)
-                .ok_or_else(|| format!("its part is no longer in {} / {}", doc.name, el.name))?,
-        ),
-    };
+    let part =
+        match part_id {
+            None => None,
+            Some(id) => {
+                // A cached list can predate the part; then look in a fresh one.
+                let mut found = None;
+                for refresh in [false, true] {
+                    let list = if el.element_type == "ASSEMBLY" {
+                        get_asm_items(app, &doc, &el.id, refresh).await?
+                    } else {
+                        get_parts(app, &doc, &el.id, refresh).await?
+                    };
+                    found = list.data.items.into_iter().find(|p| p.part_id == id);
+                    if found.is_some() {
+                        break;
+                    }
+                }
+                Some(found.ok_or_else(|| {
+                    format!("its part is no longer in {} / {}", doc.name, el.name)
+                })?)
+            }
+        };
     save(app, &ExportTarget { doc, el, part }).await
 }
 

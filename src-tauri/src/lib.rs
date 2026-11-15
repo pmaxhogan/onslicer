@@ -26,6 +26,7 @@ pub fn run() {
             commands::get_elements,
             commands::peek_parts,
             commands::get_parts,
+            commands::get_asm_items,
             commands::get_thumb,
             commands::get_item_thumb,
             commands::save_export,
