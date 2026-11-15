@@ -8,6 +8,7 @@ use tauri::{AppHandle, State};
 use crate::data;
 use crate::model::*;
 use crate::onshape::Onshape;
+use crate::settings;
 use crate::slicers::{self, Slicers};
 
 #[tauri::command]
@@ -86,6 +87,27 @@ pub async fn print_export(
 #[tauri::command]
 pub async fn check_exports(app: AppHandle) -> Result<ExportCheck, String> {
     data::check_exports(&app).await
+}
+
+/// Re-export a target from its export record (auto-save); `key` as in
+/// `ExportCheck::stale`.
+#[tauri::command]
+pub async fn resave_export(app: AppHandle, key: String) -> Result<SaveResult, String> {
+    data::resave(&app, &key).await
+}
+
+#[tauri::command]
+pub fn get_auto_save(app: AppHandle) -> Result<bool, String> {
+    Ok(settings::store(&app)?
+        .get(settings::AUTO_SAVE)
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false))
+}
+
+#[tauri::command]
+pub fn set_auto_save(app: AppHandle, on: bool) -> Result<(), String> {
+    settings::store(&app)?.set(settings::AUTO_SAVE, on);
+    settings::flush(&app)
 }
 
 #[tauri::command]

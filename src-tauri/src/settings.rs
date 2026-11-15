@@ -11,6 +11,8 @@ use tauri_plugin_store::{Store, StoreExt};
 pub const SETTINGS_FILE: &str = "settings.json";
 pub const API_CALLS_TOTAL: &str = "apiCallsTotal";
 pub const API_CALLS_SINCE: &str = "apiCallsSince";
+/// Re-export changed tracked files on their own while the app is open.
+pub const AUTO_SAVE: &str = "autoSave";
 
 pub fn store(app: &AppHandle) -> Result<Arc<Store<Wry>>, String> {
     app.store(SETTINGS_FILE)

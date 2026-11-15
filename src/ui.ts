@@ -17,6 +17,12 @@ export function esc(s: string | null | undefined): string {
   return (s ?? "").replace(/[&<>"]/g, (c) => ESCAPES[c] ?? c);
 }
 
+// Toast after an auto-save pass, from the saved files' names.
+export function autoSavedSummary(files: string[]): string {
+  if (files.length === 1) return `Auto-saved ${files[0]} 2713`;
+  return `Auto-saved ${files.length} files 2713`;
+}
+
 // "1 doc", "2 docs"
 export function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;

@@ -17,6 +17,7 @@ import type {
 } from "./types";
 import {
   authConfigured,
+  autoSavedSummary,
   buildAuthInput,
   elementTypeLabel,
   esc,
@@ -154,7 +155,8 @@ function saveTitle(stale = false): string {
 // ---------- change checks ----------
 
 // Save buttons (keyed by exportKey) whose tab changed in Onshape since their
-// last save or print. Filled by the once-a-minute check while focused.
+// last save or print. Filled by the once-a-minute check, which runs while the
+// window is focused, or all the time while auto-save is on.
 let staleKeys = new Set<string>();
 
 function applyStale(): void {
@@ -179,6 +181,7 @@ async function checkExports(): Promise<void> {
     staleKeys = new Set(res.stale);
     applyStale();
     if (res.docs?.changed) showDocs(res.docs);
+    if (autoSave && res.stale.length) await autoSaveStale(res.stale);
   } catch (e) {
     if (!checkFailing) toast("Checking for changes failed: " + errMsg(e), true, 6000);
     checkFailing = true;
@@ -187,13 +190,77 @@ async function checkExports(): Promise<void> {
   }
 }
 
-const poller = new FocusPoller(checkExports, 60_000, document.hasFocus());
+// One check at a time, whether from the poller or the auto-save toggle.
+let checking: Promise<void> | null = null;
+function checkNow(): Promise<void> {
+  checking ??= checkExports().finally(() => (checking = null));
+  return checking;
+}
+
+let windowFocused = document.hasFocus();
+const poller = new FocusPoller(checkNow, 60_000, windowFocused);
+
+// ---------- auto-save ----------
+
+// While on, the poller runs unfocused too and stale targets are re-exported.
+let autoSave = false;
+
+function syncPoller(): void {
+  poller.setFocused(windowFocused || autoSave);
+}
+
+function onFocusChange(focused: boolean): void {
+  windowFocused = focused;
+  syncPoller();
+}
+
+// Keys whose auto-save failed; each failure streak toasts once.
+const autoSaveFailed = new Set<string>();
+
+async function autoSaveStale(keys: string[]): Promise<void> {
+  const saved: string[] = [];
+  for (const key of keys) {
+    if (!autoSave) break;
+    const btns = document.querySelectorAll<HTMLButtonElement>(
+      `button.save[data-key="${CSS.escape(key)}"]`,
+    );
+    for (const b of btns) b.disabled = true;
+    try {
+      const r = await api.resaveExport(key);
+      markSaved(key);
+      autoSaveFailed.delete(key);
+      saved.push(fileName(r.file));
+    } catch (e) {
+      if (!autoSaveFailed.has(key)) toast(`Auto-save failed: ${errMsg(e)}`, true, 6000);
+      autoSaveFailed.add(key);
+    } finally {
+      for (const b of btns) if (!b.dataset.busy) b.disabled = false;
+    }
+  }
+  if (saved.length) toast(autoSavedSummary(saved));
+}
+
+async function setAutoSave(on: boolean): Promise<void> {
+  const box = $<HTMLInputElement>("#autosave-toggle");
+  try {
+    await api.setAutoSave(on);
+  } catch (e) {
+    box.checked = autoSave;
+    toast("Cannot save the auto-save setting: " + errMsg(e), true, 6000);
+    return;
+  }
+  autoSave = on;
+  autoSaveFailed.clear();
+  syncPoller();
+  // Catch up at once on whatever changed while it was off.
+  if (on) void checkNow();
+}
 
 // Native window focus; without it, the webview's own focus events.
 function watchFocus(): void {
   const domFallback = () => {
-    window.addEventListener("focus", () => poller.setFocused(true));
-    window.addEventListener("blur", () => poller.setFocused(false));
+    window.addEventListener("focus", () => onFocusChange(true));
+    window.addEventListener("blur", () => onFocusChange(false));
   };
   let appWindow: ReturnType<typeof getCurrentWindow>;
   try {
@@ -202,10 +269,10 @@ function watchFocus(): void {
     domFallback();
     return;
   }
-  appWindow.onFocusChanged(({ payload }) => poller.setFocused(payload)).catch(domFallback);
+  appWindow.onFocusChanged(({ payload }) => onFocusChange(payload)).catch(domFallback);
   appWindow
     .isFocused()
-    .then((f) => poller.setFocused(f))
+    .then(onFocusChange)
     .catch(() => {});
 }
 watchFocus();
@@ -724,10 +791,20 @@ $("#set-mode").onchange = showModeFields;
 $("#set-slicer").onchange = () => void onSlicerChange();
 $("#slicer-rescan").onclick = () => void rescanSlicers();
 $("#update-restart").onclick = () => void relaunch();
+$<HTMLInputElement>("#autosave-toggle").onchange = (e) =>
+  void setAutoSave((e.target as HTMLInputElement).checked);
 
 void (async () => {
   void checkForUpdate();
   void refreshSlicers();
+  api
+    .getAutoSave()
+    .then((on) => {
+      autoSave = on;
+      $<HTMLInputElement>("#autosave-toggle").checked = on;
+      syncPoller();
+    })
+    .catch(() => {});
   let auth: AuthSettings;
   try {
     auth = await api.getAuthSettings();

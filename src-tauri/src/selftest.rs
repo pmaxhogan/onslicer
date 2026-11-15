@@ -204,6 +204,14 @@ async fn steps(app: &AppHandle, out: &mut Vec<Step>) -> Result<(), String> {
         ),
     );
 
+    // Auto-save rebuilds the target from the export record and saves it again.
+    let again = data::resave(app, &key).await?;
+    step(
+        "resave",
+        again.file == res.file && again.bytes > 100,
+        format!("{} bytes -> {}", again.bytes, again.file),
+    );
+
     // Cache invalidation: a plain elements refresh keeps the parts cache of an
     // unchanged part studio (same microversionId); a full refresh drops it.
     let parts_cache = data::parts_path(app, &doc.id, &ps.id)?;

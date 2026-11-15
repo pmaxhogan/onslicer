@@ -81,6 +81,54 @@
         opacity: 0.5;
         cursor: default;
       }
+      #autosave {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 13.5px;
+        color: var(--muted);
+        cursor: pointer;
+        user-select: none;
+        white-space: nowrap;
+      }
+      #autosave input {
+        appearance: none;
+        position: relative;
+        width: 30px;
+        height: 17px;
+        margin: 0;
+        border-radius: 9px;
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+        cursor: pointer;
+        transition: background 0.12s;
+      }
+      #autosave input::after {
+        content: "";
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 11px;
+        height: 11px;
+        border-radius: 50%;
+        background: var(--muted);
+        transition: transform 0.12s;
+      }
+      #autosave input:checked {
+        background: var(--accent);
+        border-color: var(--accent);
+      }
+      #autosave input:checked::after {
+        background: #fff;
+        transform: translateX(13px);
+      }
+      #autosave input:focus-visible {
+        outline: 2px solid var(--accent-2);
+        outline-offset: 2px;
+      }
+      #autosave:has(input:checked) {
+        color: var(--text);
+      }
       #search,
       #dlg-filter {
         background: var(--panel);
@@ -452,6 +500,13 @@
   <body>
     <header>
       <h1>on<span>slicer</span></h1>
+      <label
+        id="autosave"
+        title="While onslicer is open, check Onshape once a minute (also in the background) and re-export every saved or printed file whose tab changed, overwriting it in place"
+      >
+        <input id="autosave-toggle" type="checkbox" role="switch" />
+        Auto-save
+      </label>
       <input id="search" type="search" placeholder="Filter documents&hellip;" />
       <button
         id="refresh"

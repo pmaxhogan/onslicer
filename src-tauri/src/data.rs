@@ -750,6 +750,47 @@ async fn update_records(app: &AppHandle, f: impl FnOnce(&mut ExportRecords)) -> 
     write_json(&path, &records).await
 }
 
+/// Saves the export recorded under `key` again (auto-save). The target is
+/// rebuilt from the cached document, tab and part lists, which the change
+/// check that found it stale has just brought up to date.
+pub async fn resave(app: &AppHandle, key: &str) -> Result<SaveResult, String> {
+    let records: ExportRecords = read_json(&records_path(app)?).await.unwrap_or_default();
+    let rec = records
+        .items
+        .get(key)
+        .ok_or_else(|| format!("{key} was never exported"))?;
+    let part_id = key
+        .strip_prefix(&format!("{}/{}/", rec.doc_id, rec.element_id))
+        .filter(|p| !p.is_empty());
+    let doc = get_docs(app, Refresh::None)
+        .await?
+        .data
+        .items
+        .into_iter()
+        .find(|d| d.id == rec.doc_id)
+        .ok_or("its document is no longer in Onshape")?;
+    let el = get_elements(app, &doc, Refresh::None)
+        .await?
+        .data
+        .items
+        .into_iter()
+        .find(|e| e.id == rec.element_id)
+        .ok_or_else(|| format!("its tab is no longer in {}", doc.name))?;
+    let part = match part_id {
+        None => None,
+        Some(id) => Some(
+            get_parts(app, &doc, &el.id, false)
+                .await?
+                .data
+                .items
+                .into_iter()
+                .find(|p| p.part_id == id)
+                .ok_or_else(|| format!("its part is no longer in {} / {}", doc.name, el.name))?,
+        ),
+    };
+    save(app, &ExportTarget { doc, el, part }).await
+}
+
 /// Which exported targets changed in Onshape since their last save. Nothing
 /// exported: no API call. Otherwise the incremental document list (usually 1
 /// call), then each exported-from document's element list only when that

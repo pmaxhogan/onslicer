@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AuthSettings, Doc, SlicerState } from "./types";
 import {
+  autoSavedSummary,
   authConfigured,
   buildAuthInput,
   elementTypeLabel,
@@ -72,6 +73,13 @@ describe("formatting", () => {
     expect(fileName("C:\\Users\\me\\exports\\a\\b.stl")).toBe("b.stl");
     expect(fileName("/home/me/b.stl")).toBe("b.stl");
     expect(fileName("b.stl")).toBe("b.stl");
+  });
+});
+
+describe("autoSavedSummary", () => {
+  it("names a single file and counts several", () => {
+    expect(autoSavedSummary(["a.stl"])).toBe("Auto-saved a.stl 2713");
+    expect(autoSavedSummary(["a.stl", "b.stl"])).toBe("Auto-saved 2 files 2713");
   });
 });
 

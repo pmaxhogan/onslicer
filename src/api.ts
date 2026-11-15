@@ -39,6 +39,12 @@ export const getCallStats = () => invoke<CallStats>("get_call_stats");
 
 export const checkExports = () => invoke<ExportCheck>("check_exports");
 
+// Re-export a tracked target by its exportKey (auto-save).
+export const resaveExport = (key: string) => invoke<SaveResult>("resave_export", { key });
+
+export const getAutoSave = () => invoke<boolean>("get_auto_save");
+export const setAutoSave = (on: boolean) => invoke<void>("set_auto_save", { on });
+
 export const getAuthSettings = () => invoke<AuthSettings>("get_auth_settings");
 
 export const saveAuthSettings = (input: AuthInput) =>
