@@ -82,6 +82,7 @@ pub async fn solve(
         .build()
         .map_err(|e| format!("could not open the Onshape security check: {e}"))?;
     let started = Instant::now();
+    let mut shown = captcha;
     let result = loop {
         tokio::time::sleep(POLL).await;
         if app.get_webview_window(LABEL).is_none() {
@@ -102,7 +103,8 @@ pub async fn solve(
             }
         }
         let elapsed = started.elapsed();
-        if elapsed > SHOW_AFTER && !window.is_visible().unwrap_or(true) {
+        if elapsed > SHOW_AFTER && !shown {
+            shown = true;
             let _ = window.show();
             let _ = window.set_focus();
         }

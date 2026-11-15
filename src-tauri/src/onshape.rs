@@ -185,7 +185,10 @@ impl Onshape {
                 .map_err(|e| format!("request failed: {}", error_chain(&e)))?;
             let status = res.status();
             if let Some(action) = waf::action(&res) {
-                if !onshape || waf_tries >= WAF_TRIES {
+                if !onshape {
+                    return Err(format!("{url} wants a browser security check ({action})"));
+                }
+                if waf_tries >= WAF_TRIES {
                     return Err(format!(
                         "Onshape's firewall still wants a security check ({action}) after \
                          passing one - try again in a few minutes"
