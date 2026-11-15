@@ -31,6 +31,9 @@ Tauri 2 desktop app (Windows, NSIS): browse Onshape documents, export STL, open 
   `settings.json`, `cache/`, `exports/`) and the same Credential Manager entries.
 - The Credential Manager is not reachable from SSH / session-0 shells (error 1312). Run the app
   or the selftest from the desktop session.
+- Onshape's AWS WAF challenges the export endpoints (`/stl`, `/translations`) for any
+  non-browser client without API keys. `waf.rs` passes the check in a hidden webview window
+  (shown after 3 s or for a CAPTCHA) and sends its `aws-waf-token` cookie, memory only.
 - No settings or cache migration code: change the stored shape and move existing data by hand.
 - Secrets: never in `settings.json`; keyring service `com.pmaxhogan.onslicer`, long values
   chunked (see `auth.rs`).

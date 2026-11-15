@@ -5,13 +5,15 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use reqwest::header::{ACCEPT, LOCATION};
+use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, COOKIE, LOCATION};
 use reqwest::{redirect, Method, Response, StatusCode, Url};
+use tauri::async_runtime::Mutex as AsyncMutex;
 use tauri::{AppHandle, Manager};
 
 use crate::auth::Auth;
 use crate::model::CallStats;
 use crate::settings;
+use crate::waf;
 
 pub const BASE: &str = "https://cad.onshape.com";
 pub const JSON_ACCEPT: &str = "application/json;charset=UTF-8;qs=0.09";
@@ -36,10 +38,21 @@ pub fn api_url(path: &str) -> Result<Url, String> {
         .map_err(|e| format!("bad Onshape URL {path}: {e}"))
 }
 
-/// AWS WAF in front of Onshape answers a request it wants a browser
-/// challenge for with an empty 202 and this header.
-fn is_waf_challenge(res: &Response) -> bool {
-    res.status() == StatusCode::ACCEPTED && res.headers().contains_key("x-amzn-waf-action")
+/// How many times one request may go through the WAF check. Two, because
+/// the first token picked up can be a stale one left in the webview.
+const WAF_TRIES: usize = 2;
+
+/// `headers` with `name=value` added to its Cookie header.
+fn add_cookie(headers: &mut HeaderMap, name: &str, value: &str) -> Result<(), String> {
+    let pair = format!("{name}={value}");
+    let cookie = match headers.get(COOKIE).and_then(|v| v.to_str().ok()) {
+        Some(c) if !c.is_empty() => format!("{c}; {pair}"),
+        _ => pair,
+    };
+    let value = HeaderValue::from_str(&cookie)
+        .map_err(|_| "the Onshape security token is not a valid cookie".to_string())?;
+    headers.insert(COOKIE, value);
+    Ok(())
 }
 
 /// Auth is only ever sent to Onshape itself over https.
@@ -66,6 +79,11 @@ pub struct Onshape {
     /// Serializes read-modify-write of the persisted counter, so parallel
     /// requests (thumbnails) don't lose increments.
     count_lock: Mutex<()>,
+    /// The token from the last passed Onshape WAF check (see waf.rs).
+    waf_token: Mutex<Option<String>>,
+    /// One WAF check at a time: parallel requests that all get challenged
+    /// share the first one's answer.
+    waf_lock: AsyncMutex<()>,
 }
 
 impl Onshape {
@@ -74,7 +92,39 @@ impl Onshape {
             client,
             session_calls: AtomicU64::new(0),
             count_lock: Mutex::new(()),
+            waf_token: Mutex::new(None),
+            waf_lock: AsyncMutex::new(()),
         }
+    }
+
+    fn waf_token(&self) -> Option<String> {
+        self.waf_token
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    fn set_waf_token(&self, token: String) {
+        *self.waf_token.lock().unwrap_or_else(|e| e.into_inner()) = Some(token);
+    }
+
+    /// Passes the WAF check for `url`, unless another request already did
+    /// since `used` (the token this request was sent with) was turned down.
+    async fn pass_waf(
+        &self,
+        app: &AppHandle,
+        url: &Url,
+        action: &str,
+        used: Option<&str>,
+    ) -> Result<(), String> {
+        let _guard = self.waf_lock.lock().await;
+        let current = self.waf_token();
+        if current.is_some() && current.as_deref() != used {
+            return Ok(());
+        }
+        let token = waf::solve(app, url, action == "captcha", used).await?;
+        self.set_waf_token(token);
+        Ok(())
     }
 
     /// GET `start`. Onshape redirects some endpoints (e.g. STL export) to a
@@ -111,6 +161,7 @@ impl Onshape {
         let mut url = start.clone();
         let mut hops = 0;
         let mut retried = false;
+        let mut waf_tries = 0;
         while hops < MAX_HOPS {
             let onshape = is_onshape(&url);
             let mut req = self
@@ -120,24 +171,39 @@ impl Onshape {
             if let Some(body) = body {
                 req = req.json(body);
             }
+            let waf_token = if onshape { self.waf_token() } else { None };
             if onshape {
-                req = req.headers(auth.headers_for(app, &url).await?);
+                let mut headers = auth.headers_for(app, &url).await?;
+                if let Some(t) = &waf_token {
+                    add_cookie(&mut headers, waf::TOKEN_COOKIE, t)?;
+                }
+                req = req.headers(headers);
             }
             let res = req
                 .send()
                 .await
                 .map_err(|e| format!("request failed: {}", error_chain(&e)))?;
             let status = res.status();
-            if is_waf_challenge(&res) {
-                return Err(
-                    "Onshape's firewall held the request back (too many in a short time?) - \
-                     try again in a few minutes"
-                        .into(),
-                );
+            if let Some(action) = waf::action(&res) {
+                if !onshape || waf_tries >= WAF_TRIES {
+                    return Err(format!(
+                        "Onshape's firewall still wants a security check ({action}) after \
+                         passing one - try again in a few minutes"
+                    ));
+                }
+                waf_tries += 1;
+                self.pass_waf(app, &url, &action, waf_token.as_deref())
+                    .await?;
+                url = start.clone();
+                hops = 0;
+                continue;
             }
             if onshape && status.as_u16() < 400 {
                 self.count_call(app);
                 auth.note_response_cookies(res.headers());
+                if let Some(t) = waf::token_from_response(res.headers()) {
+                    self.set_waf_token(t);
+                }
             }
             if onshape
                 && !retried
@@ -226,6 +292,20 @@ mod tests {
         assert!(!is_onshape(
             &Url::parse("https://evilonshape.com/x").unwrap()
         ));
+    }
+
+    #[test]
+    fn add_cookie_appends_to_an_existing_cookie_header() {
+        let mut h = HeaderMap::new();
+        add_cookie(&mut h, "aws-waf-token", "t").unwrap();
+        assert_eq!(h.get(COOKIE).unwrap(), "aws-waf-token=t");
+        let mut h = HeaderMap::new();
+        h.insert(COOKIE, HeaderValue::from_static("on=s; XSRF-TOKEN=x"));
+        add_cookie(&mut h, "aws-waf-token", "t").unwrap();
+        assert_eq!(
+            h.get(COOKIE).unwrap(),
+            "on=s; XSRF-TOKEN=x; aws-waf-token=t"
+        );
     }
 
     #[test]

@@ -6,6 +6,7 @@ mod onshape;
 mod selftest;
 mod settings;
 mod slicers;
+mod waf;
 
 use tauri::WebviewWindowBuilder;
 
@@ -40,7 +41,8 @@ pub fn run() {
         ])
         .setup(|app| {
             if selftest::requested() {
-                // Headless: no window, no webview.
+                // Headless: no main window. A WAF check may still open
+                // its own window (see waf.rs).
                 tauri::async_runtime::spawn(selftest::run_and_exit(app.handle().clone()));
             } else {
                 // The window is declared in tauri.conf.json with create=false
@@ -56,6 +58,18 @@ pub fn run() {
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            // Headless, the WAF check window is the only window; closing it
+            // must not end the selftest, which exits on its own.
+            if let tauri::RunEvent::ExitRequested {
+                api, code: None, ..
+            } = event
+            {
+                if selftest::requested() {
+                    api.prevent_exit();
+                }
+            }
+        });
 }
