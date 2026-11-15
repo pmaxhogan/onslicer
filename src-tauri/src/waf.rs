@@ -105,8 +105,10 @@ pub async fn solve(
         let elapsed = started.elapsed();
         if elapsed > SHOW_AFTER && !shown {
             shown = true;
+            // Shown, not focused: with auto-save this can run while the user
+            // types elsewhere. A CAPTCHA window is visible (and focused) from
+            // the start.
             let _ = window.show();
-            let _ = window.set_focus();
         }
         if elapsed > TIMEOUT {
             break Err("the Onshape security check timed out - try again".into());

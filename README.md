@@ -32,6 +32,10 @@ automatically) - no export -> save -> import dance.
    one found is selected; refresh rescans, and "Other..." adds any executable. With no slicer
    available a banner says so and Print is disabled, but Save still works.
 
+4. Optional: turn on **Auto-save** in the header. While onslicer is open (focused or not) it
+   checks Onshape once a minute and re-exports every file you have saved or printed whose tab
+   changed, overwriting it in place. Turning it on catches up on everything already out of date.
+
 ## Development
 
 ```sh
